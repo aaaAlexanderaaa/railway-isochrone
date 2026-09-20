@@ -1,0 +1,18 @@
+{
+ "round": 1,
+ "identity": "带娃家庭",
+ "origin": "兰州",
+ "time_setting": "tonight",
+ "budget": [
+  null,
+  3
+ ],
+ "pref": "transfer1",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "周日晚",
+  "time": "17:00"
+ },
+ "question": "我带着六岁的孩子，行李不多但不想把时间全耗在赶车上。今晚18:00前后我就想出发，不想坐超过3个小时的车，换一次车可以接受，两次就算了。我周日晚17:00前得赶回兰州。帮我看看有哪些现实可行的选择？"
+}

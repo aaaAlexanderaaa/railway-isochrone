@@ -1,0 +1,18 @@
+{
+ "round": 5,
+ "identity": "自由职业者",
+ "origin": "温州",
+ "time_setting": "tomorrow_early",
+ "budget": [
+  2,
+  3
+ ],
+ "pref": null,
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "明天",
+  "time": "12:00"
+ },
+ "question": "我是自由职业者，在温州待烦了，想换个城市待一两天，电脑随身，上车能办公。明天一早我就想走，大概3个小时左右的车程，车次怎么坐都行。我明天12:00前得赶回温州。帮我看看有哪些现实可行的选择？"
+}

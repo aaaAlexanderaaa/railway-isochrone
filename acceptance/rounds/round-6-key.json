@@ -1,0 +1,18 @@
+{
+ "round": 6,
+ "identity": "出差销售",
+ "origin": "常州",
+ "time_setting": "tomorrow_early",
+ "budget": [
+  3,
+  4
+ ],
+ "pref": "direct",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "明天",
+  "time": "15:00"
+ },
+ "question": "我是做销售的，常年出差，这次路过常州多留了一天，明天还得继续跑客户。明天一早我就想走，单程坐3到4个小时的火车都能接受，最好全程直达，懒得换乘。明天15:00之前我必须回到常州，不能误事。帮我看看有哪些现实可行的选择？"
+}

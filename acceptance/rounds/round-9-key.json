@@ -1,0 +1,18 @@
+{
+ "round": 9,
+ "identity": "周末逃离",
+ "origin": "温州",
+ "time_setting": "tomorrow",
+ "budget": [
+  2,
+  3
+ ],
+ "pref": "any",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "后天",
+  "time": "17:00"
+ },
+ "question": "我在温州上班，这个周末临时不想宅在家里。我打算明天白天出发，车程控制在2到3小时之间吧，普速车也无所谓，能到就行。后天17:00之前我必须回到温州，不能误事。帮我看看有哪些现实可行的选择？"
+}

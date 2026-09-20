@@ -1,0 +1,18 @@
+{
+ "round": 7,
+ "identity": "第一次来",
+ "origin": "肇庆",
+ "time_setting": "now",
+ "budget": [
+  1,
+  2
+ ],
+ "pref": "transfer1",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "明天",
+  "time": "21:30"
+ },
+ "question": "我第一次来肇庆，想顺便再去一个没去过的城市。现在是周六11:05，大概2个小时左右的车程，换一次车可以接受，两次就算了。明天21:30之前我必须回到肇庆，不能误事。帮我看看有哪些现实可行的选择？"
+}

@@ -1,0 +1,18 @@
+{
+ "round": 2,
+ "identity": "周末逃离",
+ "origin": "重庆",
+ "time_setting": "tomorrow_early",
+ "budget": [
+  null,
+  5
+ ],
+ "pref": "any",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "后天",
+  "time": "20:00"
+ },
+ "question": "我在重庆上班，这个周末临时不想宅在家里。明天一早我就想走，不想坐超过5个小时的车，普速车也无所谓，能到就行。我后天20:00前得赶回重庆。帮我看看有哪些现实可行的选择？"
+}

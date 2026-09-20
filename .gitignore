@@ -1,0 +1,6 @@
+node_modules/
+shots/
+data/output_gtfs.zip
+tmp_*
+*.log
+.browse-profile/
