@@ -1,20 +1,17 @@
-/* 地图底图（标准/卫星）+ 全国天气图层（Open-Meteo 预报 + 中央气象台预警） */
+/* 地图底图（标准/卫星）+ 全国天气图层（Open-Meteo 混合步长格点 + 中央气象台预警）
+ * 数据抓取/打包唯一实现在 weather_core.js；本文件负责展示：
+ *   - 底部时间轴（近 72h 逐小时 + 远期 3h 步长，播放/拖动，与出发日联动）+ 图例 + 出处
+ *   - 站点详情内的单点多模型气象图（温度/湿度/降水/天气类型/逐小时数值，悬停读取）
+ *   - 对外提供 arrivalWx()：给候选清单/详情页取"到达时刻天气"
+ */
 "use strict";
 
 const Weather = (() => {
-  const LAT0 = 18, LAT1 = 53.5, LON0 = 73, LON1 = 135;
-  const NROW = 20, NCOL = 32;
-  const BATCH = 80;
-  const FORECAST_DAYS = 16;
-  const OM = "https://api.open-meteo.com/v1/forecast";
-  const DAILY = [
-    "weather_code",
-    "temperature_2m_max",
-    "precipitation_sum",
-    "wind_speed_10m_max",
-    "wind_direction_10m_dominant",
-    "cloud_cover_mean",
-  ].join(",");
+  const CORE = typeof WeatherCore !== "undefined" ? WeatherCore : null;
+  const LAT0 = CORE ? CORE.LAT0 : 18, LAT1 = CORE ? CORE.LAT1 : 53.5;
+  const LON0 = CORE ? CORE.LON0 : 73, LON1 = CORE ? CORE.LON1 : 135;
+  const NROW = CORE ? CORE.NROW : 20, NCOL = CORE ? CORE.NCOL : 32;
+  const DEFAULT_STEPS = 176;
 
   const lats = linspace(LAT0, LAT1, NROW);
   const lons = linspace(LON0, LON1, NCOL);
@@ -23,16 +20,21 @@ const Weather = (() => {
   const N = NROW * NCOL;
 
   let map, getDay, stations = [];
-  let grid = null; // { times, precip, temp, cloud, wind, wdir, code }
+  let grid = null; // 当前模型的 { times[iso], timesMs, nSteps, precip(mm), temp, wind, wdir, code, fetchedAt }
   let gridPromise = null;
+  const gridByModel = new Map();
+  let wxModel = "best_match";
+  const MODEL_LABELS = { best_match: "综合", ecmwf_ifs025: "ECMWF", gfs_seamless: "GFS", icon_seamless: "ICON" };
   let alarms = [];
-  let wxDay = 0;
-  let mode = "off"; // off | rain | temp | wind | warn
+  let wxStep = 0;
+  let mode = "off";
   let playing = false, playTimer = null;
   let pendingTravelOff = 0;
   let layer = null, windLayer = null, warnGroup = null;
   let baseStd, baseSat, baseSatLbl, currentBase = "std";
   let geoIndex = null;
+  const MODEL_COLORS = { best_match: "#2563eb", ecmwf_ifs025: "#7c3aed", gfs_seamless: "#ea580c", icon_seamless: "#0d9488" };
+  const pointCache = new Map(); // "la,lo" -> { at, pack } 会话内缓存
 
   function linspace(a, b, n) {
     const o = new Float64Array(n);
@@ -58,14 +60,15 @@ const Weather = (() => {
     return a + (b - a) * t;
   }
 
-  function sample(arr, lat, lon, day) {
+  /* ---------- 格点采样 ---------- */
+  function sample(arr, lat, lon, step) {
     const fi = (lat - LAT0) / dLat;
     const fj = (lon - LON0) / dLon;
     if (fi < -0.01 || fj < -0.01 || fi > NROW - 0.99 || fj > NCOL - 0.99) return NaN;
     const i0 = Math.max(0, Math.min(NROW - 2, Math.floor(fi)));
     const j0 = Math.max(0, Math.min(NCOL - 2, Math.floor(fj)));
     const ti = fi - i0, tj = fj - j0;
-    const base = day * N;
+    const base = step * N;
     const a = arr[base + i0 * NCOL + j0];
     const b = arr[base + i0 * NCOL + j0 + 1];
     const c = arr[base + (i0 + 1) * NCOL + j0];
@@ -74,14 +77,37 @@ const Weather = (() => {
     return lerp(z0, z1, ti);
   }
 
-  function sampleCode(lat, lon, day) {
+  function sampleCode(lat, lon, step) {
     const fi = Math.round((lat - LAT0) / dLat);
     const fj = Math.round((lon - LON0) / dLon);
     if (fi < 0 || fj < 0 || fi >= NROW || fj >= NCOL) return 0;
-    return grid.code[day * N + fi * NCOL + fj] || 0;
+    return grid.code[step * N + fi * NCOL + fj] || 0;
   }
 
-  /* ---------- 色标 ---------- */
+  function clampStep(s) {
+    const max = (grid && grid.nSteps ? grid.nSteps : DEFAULT_STEPS) - 1;
+    return Math.max(0, Math.min(max, s | 0));
+  }
+
+  // 绝对分钟（相对查询日 00:00）→ 时间轴步：timesMs 二分
+  function stepForMinute(minAbs) {
+    if (!grid || !grid.timesMs || !grid.timesMs.length) return 0;
+    const ms = (grid.timesMs[0] - stateAnchorMs()) + (Number(minAbs) || 0) * 60000;
+    let lo = 0, hi = grid.timesMs.length - 1;
+    if (ms <= grid.timesMs[0]) return 0;
+    if (ms >= grid.timesMs[hi]) return hi;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (grid.timesMs[mid] <= ms) lo = mid; else hi = mid;
+    }
+    // 取更近的一步
+    return (ms - grid.timesMs[lo]) <= (grid.timesMs[hi] - ms) ? lo : hi;
+  }
+  function stateAnchorMs() {
+    return typeof state !== "undefined" && state.anchor ? state.anchor.getTime() : Date.now();
+  }
+
+  /* ---------- 色标（降水阈值按窗口累计口径校准） ---------- */
   function mix(hexA, hexB, t) {
     const p = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
     const a = p(hexA), b = p(hexB);
@@ -109,13 +135,12 @@ const Weather = (() => {
   }
 
   const RAIN_STOPS = [
-    [0, "#d7e8fb", 0],
-    [0.2, "#9ec5f7", 0.32],
-    [1, "#5b93ea", 0.48],
-    [4, "#1d4ed8", 0.62],
-    [10, "#3730a3", 0.74],
-    [20, "#6d28d9", 0.82],
-    [40, "#9d174d", 0.88],
+    [0.05, "#9ec5f7", 0.30],
+    [0.5, "#5b93ea", 0.45],
+    [2, "#1d4ed8", 0.58],
+    [6, "#3730a3", 0.70],
+    [12, "#6d28d9", 0.80],
+    [25, "#9d174d", 0.88],
   ];
   const TEMP_STOPS = [
     [-15, "#1e3a8a", 0.55],
@@ -144,36 +169,40 @@ const Weather = (() => {
     return m < 0.07 ? Math.max(0, m / 0.07) : 1;
   }
 
-  function pixelColor(lat, lon, day) {
+  function pixelColor(lat, lon, step) {
     if (!grid) return [0, 0, 0, 0];
     const fade = edgeFade(lat, lon);
     if (fade <= 0) return [0, 0, 0, 0];
     let col;
     if (mode === "rain") {
-      const p = sample(grid.precip, lat, lon, day);
-      const c = sample(grid.cloud, lat, lon, day);
-      const cloudA = Number.isFinite(c) ? Math.min(0.55, (c / 100) * 0.55) : 0;
+      const p = sample(grid.precip, lat, lon, step);
+      const code = sampleCode(lat, lon, step);
       const [rr, rg, rb, ra] = ramp(RAIN_STOPS, p);
-      if (ra < 0.05 && cloudA < 0.08) return [0, 0, 0, 0];
-      col = ra >= 0.05
-        ? [rr, rg, rb, Math.min(230, (ra * 255) | 0)]
-        : [236, 240, 246, (cloudA * 255) | 0];
+      if (ra >= 0.05) {
+        col = [rr, rg, rb, Math.min(230, (ra * 255) | 0)];
+      } else if (code === 3) {
+        col = [214, 222, 234, 42];
+      } else if (code === 45 || code === 48) {
+        col = [203, 213, 225, 66];
+      } else {
+        return [0, 0, 0, 0];
+      }
     } else if (mode === "temp") {
-      const t = sample(grid.temp, lat, lon, day);
+      const t = sample(grid.temp, lat, lon, step);
       const [r, g, b, a] = ramp(TEMP_STOPS, t);
       col = [r, g, b, a * 255];
     } else if (mode === "wind") {
-      const w = sample(grid.wind, lat, lon, day);
+      const w = sample(grid.wind, lat, lon, step);
       const [r, g, b, a] = ramp(WIND_STOPS, w);
       col = [r, g, b, a * 255];
     } else if (mode === "warn") {
-      const code = sampleCode(lat, lon, day);
-      const p = sample(grid.precip, lat, lon, day);
+      const code = sampleCode(lat, lon, step);
+      const p = sample(grid.precip, lat, lon, step);
       const extreme = code >= 95 || code === 65 || code === 67 || code === 75 || code === 82 || code === 86 || code === 96 || code === 99;
-      const heavy = p >= 15 || code >= 63;
+      const heavy = p >= 8 || code >= 63;
       if (extreme) col = [185, 28, 28, 0.55 * 255];
       else if (heavy) col = [234, 88, 12, 0.4 * 255];
-      else if (p >= 4 || (code >= 61 && code < 80)) col = [234, 179, 8, 0.28 * 255];
+      else if (p >= 2.5 || (code >= 61 && code < 80)) col = [234, 179, 8, 0.28 * 255];
       else return [0, 0, 0, 0];
     } else {
       return [0, 0, 0, 0];
@@ -204,24 +233,24 @@ const Weather = (() => {
       if (!map_) return;
       const z = coords.z;
       const nw = L.point(coords.x * size.x, coords.y * size.y);
-      const step = z >= 8 ? 1 : z >= 6 ? 2 : 3;
+      const stepPx = z >= 8 ? 1 : z >= 6 ? 2 : 3;
       const img = ctx.createImageData(size.x, size.y);
       const data = img.data;
-      const day = clampDay(wxDay);
-      for (let y = 0; y < size.y; y += step) {
+      const step = clampStep(wxStep);
+      for (let y = 0; y < size.y; y += stepPx) {
         const left = map_.unproject([nw.x, nw.y + y], z);
         const right = map_.unproject([nw.x + size.x, nw.y + y], z);
         const gcjLat = left.lat;
         const [wlat] = z >= 7 ? gcj2wgs(gcjLat, left.lng) : [gcjLat, left.lng];
-        for (let x = 0; x < size.x; x += step) {
+        for (let x = 0; x < size.x; x += stepPx) {
           const t = x / size.x;
           const gcjLng = left.lng + (right.lng - left.lng) * t;
           const wlng = z >= 7 ? gcj2wgs(wlat, gcjLng)[1] : gcjLng;
-          const col = pixelColor(wlat, wlng, day);
+          const col = pixelColor(wlat, wlng, step);
           const a = col[3] | 0;
           if (!a) continue;
-          for (let dy = 0; dy < step && y + dy < size.y; dy++) {
-            for (let dx = 0; dx < step && x + dx < size.x; dx++) {
+          for (let dy = 0; dy < stepPx && y + dy < size.y; dy++) {
+            for (let dx = 0; dx < stepPx && x + dx < size.x; dx++) {
               const i = ((y + dy) * size.x + (x + dx)) * 4;
               data[i] = col[0]; data[i + 1] = col[1]; data[i + 2] = col[2]; data[i + 3] = a;
             }
@@ -232,7 +261,9 @@ const Weather = (() => {
     },
   });
 
-  const WindArrows = L.Layer.extend({
+  /* 风场粒子（Windy 式）：预计算屏幕网格速度场，粒子沿场平移拖尾。 */
+  const WindParticles = L.Layer.extend({
+    options: { cell: 24, maxParticles: 750, timeScale: 300 },
     onAdd(map_) {
       this._map = map_;
       this._canvas = L.DomUtil.create("canvas", "wx-wind-canvas");
@@ -240,210 +271,215 @@ const Weather = (() => {
       this._canvas.style.pointerEvents = "none";
       map_.getPane("weatherPane").appendChild(this._canvas);
       map_.on("moveend zoomend resize", this._reset, this);
+      this._raf = null;
       this._reset();
     },
     onRemove(map_) {
       map_.off("moveend zoomend resize", this._reset, this);
+      if (this._raf) cancelAnimationFrame(this._raf);
+      this._raf = null;
       if (this._canvas && this._canvas.parentNode) this._canvas.parentNode.removeChild(this._canvas);
     },
     _reset() {
       const map_ = this._map, c = this._canvas;
-      if (!map_ || !c || !grid || mode !== "wind") {
+      if (!map_ || !c) return;
+      this._buildField();
+      if (!this._field || mode !== "wind" || !grid) {
         if (c) { c.width = 0; c.height = 0; }
         return;
       }
       const size = map_.getSize();
       c.width = size.x; c.height = size.y;
       L.DomUtil.setPosition(c, map_.containerPointToLayerPoint([0, 0]));
-      const ctx = c.getContext("2d");
-      ctx.clearRect(0, 0, size.x, size.y);
-      const day = clampDay(wxDay);
-      const z = map_.getZoom();
-      const stride = z >= 7 ? 1 : z >= 5 ? 2 : 3;
-      ctx.strokeStyle = "rgba(15,23,42,.85)";
-      ctx.fillStyle = "rgba(15,23,42,.85)";
-      ctx.lineWidth = 1.2;
-      for (let i = 0; i < NROW; i += stride) {
-        for (let j = 0; j < NCOL; j += stride) {
-          const lat = lats[i], lon = lons[j];
-          const [gla, glo] = typeof wgs2gcj === "function" ? wgs2gcj(lat, lon) : [lat, lon];
-          const pt = map_.latLngToContainerPoint([gla, glo]);
-          if (pt.x < -20 || pt.y < -20 || pt.x > size.x + 20 || pt.y > size.y + 20) continue;
-          const spd = grid.wind[day * N + i * NCOL + j];
-          const dir = grid.wdir[day * N + i * NCOL + j];
-          if (!Number.isFinite(spd) || !Number.isFinite(dir) || spd < 2) continue;
-          drawArrow(ctx, pt.x, pt.y, dir, Math.min(22, 6 + spd * 0.28));
+      this._spawn();
+      if (!this._raf) this._loop();
+    },
+    _buildField() {
+      if (!grid || !this._map) { this._field = null; return; }
+      const map_ = this._map, size = map_.getSize();
+      const cell = this.options.cell;
+      const cols = Math.ceil(size.x / cell) + 1, rows = Math.ceil(size.y / cell) + 1;
+      const step = clampStep(wxStep);
+      const field = new Array(cols * rows);
+      for (let i = 0; i < rows; i++) {
+        for (let j = 0; j < cols; j++) {
+          const ll = map_.containerPointToLatLng([j * cell, i * cell]);
+          const [wla, wlo] = gcj2wgs(ll.lat, ll.lng);
+          const spd = sample(grid.wind, wla, wlo, step);
+          const dir = sample(grid.wdir, wla, wlo, step);
+          if (!Number.isFinite(spd) || !Number.isFinite(dir) || spd < 1) { field[i * cols + j] = null; continue; }
+          const rad = dir * Math.PI / 180;
+          const u = -spd * Math.sin(rad);
+          const v = -spd * Math.cos(rad);
+          const cosLat = Math.max(0.2, Math.cos(wla * Math.PI / 180));
+          const dLat = v / 111, dLon = u / (111 * cosLat);
+          const hasG = typeof wgs2gcj === "function";
+          const [gla, glo] = hasG ? wgs2gcj(wla, wlo) : [wla, wlo];
+          const [gla2, glo2] = hasG ? wgs2gcj(wla + dLat, wlo + dLon) : [wla + dLat, wlo + dLon];
+          const p0 = map_.latLngToContainerPoint([gla, glo]);
+          const p1 = map_.latLngToContainerPoint([gla2, glo2]);
+          field[i * cols + j] = { vx: (p1.x - p0.x) / 3600, vy: (p1.y - p0.y) / 3600, spd };
         }
+      }
+      this._field = field;
+      this._cols = cols;
+      this._cell = cell;
+    },
+    _velAt(x, y) {
+      const f = this._field;
+      if (!f) return null;
+      const j = Math.floor(x / this._cell), i = Math.floor(y / this._cell);
+      if (i < 0 || j < 0 || i * this._cols + j >= f.length) return null;
+      return f[i * this._cols + j];
+    },
+    _newP(size) {
+      return { x: Math.random() * size.x, y: Math.random() * size.y, age: (Math.random() * 100) | 0, max: 70 + Math.random() * 90 };
+    },
+    _spawn() {
+      const size = this._map.getSize();
+      const n = Math.min(this.options.maxParticles, Math.round(size.x * size.y / 1300));
+      this._particles = Array.from({ length: n }, () => this._newP(size));
+    },
+    _loop() {
+      const step = () => {
+        this._raf = requestAnimationFrame(step);
+        if (mode !== "wind" || !this._map || !grid) return;
+        this._frame();
+      };
+      this._raf = requestAnimationFrame(step);
+    },
+    _frame() {
+      const c = this._canvas, ctx = c.getContext("2d");
+      if (!c || !c.width) return;
+      const size = this._map.getSize();
+      const ts = this.options.timeScale / 30;
+      // 慢擦除 = 长拖尾；粒子用深色系（浅蓝在底图上不可见——视觉验收观察项 #3）
+      ctx.globalCompositeOperation = "destination-out";
+      ctx.fillStyle = "rgba(0,0,0,0.055)";
+      ctx.fillRect(0, 0, c.width, c.height);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.lineWidth = 1.8;
+      ctx.lineCap = "round";
+      for (let k = 0; k < this._particles.length; k++) {
+        const p = this._particles[k];
+        const v = this._velAt(p.x, p.y);
+        if (!v || v.spd < 1.5 || p.age > p.max || p.x < -10 || p.y < -10 || p.x > size.x + 10 || p.y > size.y + 10) {
+          this._particles[k] = this._newP(size);
+          continue;
+        }
+        const nx = p.x + v.vx * ts, ny = p.y + v.vy * ts;
+        const a = 0.5 + Math.min(v.spd / 50, 0.45);
+        ctx.strokeStyle = `rgba(17,29,46,${a.toFixed(2)})`;
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(nx, ny);
+        ctx.stroke();
+        p.x = nx; p.y = ny; p.age++;
       }
     },
   });
 
-  function drawArrow(ctx, x, y, deg, len) {
-    // 气象风向：风来自该角度（0=北）。箭头指向风去的方向 = deg+180
-    const rad = (deg + 180) * Math.PI / 180;
-    const dx = Math.sin(rad) * len, dy = -Math.cos(rad) * len;
-    ctx.beginPath();
-    ctx.moveTo(x - dx * 0.5, y - dy * 0.5);
-    ctx.lineTo(x + dx * 0.5, y + dy * 0.5);
-    ctx.stroke();
-    const hx = x + dx * 0.5, hy = y + dy * 0.5;
-    ctx.beginPath();
-    ctx.moveTo(hx, hy);
-    ctx.lineTo(hx - dx * 0.28 + dy * 0.16, hy - dy * 0.28 - dx * 0.16);
-    ctx.lineTo(hx - dx * 0.28 - dy * 0.16, hy - dy * 0.28 + dx * 0.16);
-    ctx.closePath();
-    ctx.fill();
-  }
-
-  function clampDay(d) {
-    if (!grid || !grid.nDays) return 0;
-    return Math.max(0, Math.min(grid.nDays - 1, d | 0));
-  }
-
+  /* ---------- 时间轴标签 ---------- */
   function chinaYmd(date) {
     return new Intl.DateTimeFormat("en-CA", {
       timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
     }).format(date || new Date());
   }
-
   function weekdayName(ymd) {
     const [y, m, d] = ymd.split("-").map(Number);
     return ["周日", "周一", "周二", "周三", "周四", "周五", "周六"][new Date(Date.UTC(y, m - 1, d)).getUTCDay()];
   }
 
-  function forecastIndexForTravelOff(dateOff) {
+  function stepForTravelOff(dateOff) {
     const off = Number(dateOff) || 0;
     if (!grid || !grid.times || !grid.times.length) return off;
     const today = chinaYmd();
-    let i0 = grid.times.indexOf(today);
-    if (i0 < 0) {
-      i0 = 0;
-      for (let i = 0; i < grid.times.length; i++) if (grid.times[i] <= today) i0 = i;
+    let i0 = grid.times.findIndex((t) => t.slice(0, 10) === today);
+    if (i0 < 0) i0 = 0;
+    const noonIdx = grid.times.findIndex((t, i) => i >= i0 && t.endsWith("T12:00"));
+    const base = noonIdx >= 0 ? noonIdx : i0;
+    return clampStep(base + stepSpanSteps(base, off * 1440)); // 出发日正午
+  }
+  // 从基准步偏移 N 分钟对应几步（混合步长下不能按固定步数换算）
+  function stepSpanSteps(fromStep, minutes) {
+    if (!grid || !grid.timesMs || !grid.timesMs.length) return 0;
+    const target = grid.timesMs[fromStep] + (Number(minutes) || 0) * 60000;
+    let hi = grid.timesMs.length - 1;
+    if (target >= grid.timesMs[hi]) return hi - fromStep;
+    let lo = fromStep;
+    while (lo < hi - 1) {
+      const mid = (lo + hi) >> 1;
+      if (grid.timesMs[mid] <= target) lo = mid; else hi = mid;
     }
-    return clampDay(i0 + off);
+    return lo - fromStep;
   }
 
-  function dayLabel(off) {
-    const ymd = grid && grid.times && grid.times[off];
-    if (!ymd || !/^\d{4}-\d{2}-\d{2}/.test(ymd)) return `第${off + 1}天`;
+  function stepLabel(s) {
+    if (!grid || !grid.times || !grid.times[s]) return "";
+    const iso = grid.times[s];
+    const ymd = iso.slice(0, 10), hm = iso.slice(11, 16);
     const today = chinaYmd();
-    const t0 = Date.parse(today + "T00:00:00+08:00");
-    const t1 = Date.parse(ymd.slice(0, 10) + "T00:00:00+08:00");
-    const diff = Math.round((t1 - t0) / 86400000);
-    const tag = diff === 0 ? "今天 " : diff === 1 ? "明天 " : "";
-    const [, mo, d] = ymd.split("-");
-    return `${tag}${Number(mo)}/${Number(d)} ${weekdayName(ymd.slice(0, 10))}`;
+    const diff = Math.round((Date.parse(ymd + "T00:00:00+08:00") - Date.parse(today + "T00:00:00+08:00")) / 86400000);
+    const tag = diff === 0 ? "今天" : diff === 1 ? "明天" : `${Number(ymd.slice(5, 7))}/${Number(ymd.slice(8, 10))} ${weekdayName(ymd)}`;
+    return `${tag} ${hm}`;
   }
 
-  /* ---------- 拉取 Open-Meteo ---------- */
+  /* ---------- 拉取（服务端优先，失败回退浏览器直连 Open-Meteo） ---------- */
   function ensureGrid() {
     if (grid) return Promise.resolve(grid);
     if (gridPromise) return gridPromise;
-    gridPromise = fetchGrid().then((g) => {
+    gridPromise = fetchGrid(wxModel).then((g) => {
       grid = g;
+      gridByModel.set(wxModel, g);
       gridPromise = null;
-      wxDay = forecastIndexForTravelOff(pendingTravelOff);
+      wxStep = clampStep(stepForTravelOff(pendingTravelOff));
       return g;
     }).catch((e) => { gridPromise = null; throw e; });
     return gridPromise;
   }
 
-  async function fetchGrid() {
+  async function fetchGrid(model) {
+    const m = MODEL_LABELS[model] ? model : "best_match";
     try {
-      const r = await fetch("/api/weather/grid");
+      const r = await fetch("/api/weather/grid" + (m !== "best_match" ? "?model=" + m : ""));
       if (r.ok) {
         const j = await r.json();
-        if (j && j.ok && j.times && j.times.length && j.nrow === NROW && j.ncol === NCOL) {
+        if (j && j.ok && j.v === 3 && j.times && j.times.length && j.nrow === NROW && j.ncol === NCOL) {
           return unpackPack(j);
         }
       }
-    } catch (e) { /* 回退直连 Open-Meteo */ }
-    return fetchGridDirect();
+    } catch (e) { /* 回退直连 */ }
+    if (!CORE) throw new Error("天气组件未加载");
+    return unpackPack(await CORE.buildGrid(m));
   }
 
   function unpackPack(j) {
-    const nDays = j.nDays || (j.times && j.times.length) || FORECAST_DAYS;
-    const toF = (a) => {
-      const out = new Float32Array(nDays * N);
+    const nSteps = j.nSteps || (j.times && j.times.length) || 0;
+    if (!nSteps) throw new Error("天气网格为空");
+    const toF = (a, div) => {
+      const out = new Float32Array(nSteps * N);
       out.fill(NaN);
       if (!a) return out;
       for (let i = 0; i < out.length && i < a.length; i++) {
         const v = Number(a[i]);
-        out[i] = Number.isFinite(v) ? v : NaN;
+        out[i] = Number.isFinite(v) ? v / (div || 1) : NaN;
       }
       return out;
     };
-    const code = new Uint8Array(nDays * N);
+    const code = new Uint8Array(nSteps * N);
     if (j.code) for (let i = 0; i < code.length && i < j.code.length; i++) code[i] = j.code[i] | 0;
+    const times = j.times;
+    const timesMs = new Float64Array(nSteps);
+    for (let i = 0; i < nSteps; i++) timesMs[i] = Date.parse(times[i] + ":00+08:00");
     return {
-      times: j.times,
-      nDays,
-      precip: toF(j.precip),
+      times, timesMs, nSteps,
+      fetchedAt: j.fetchedAt || null,
+      precip: toF(j.precip, 10),
       temp: toF(j.temp),
-      cloud: toF(j.cloud),
       wind: toF(j.wind),
       wdir: toF(j.wdir),
       code,
     };
-  }
-
-  async function fetchGridDirect() {
-    const pts = [];
-    for (let i = 0; i < NROW; i++) for (let j = 0; j < NCOL; j++) pts.push([lats[i], lons[j]]);
-    const batches = [];
-    for (let i = 0; i < pts.length; i += BATCH) batches.push(pts.slice(i, i + BATCH));
-    const parts = await Promise.all(batches.map(fetchBatch));
-    const nDays = Math.min(FORECAST_DAYS, (parts[0].times || []).length);
-    if (!nDays) throw new Error("天气接口没有返回日期");
-    const pack = {
-      times: parts[0].times.slice(0, nDays),
-      nDays,
-      precip: new Float32Array(nDays * N),
-      temp: new Float32Array(nDays * N),
-      cloud: new Float32Array(nDays * N),
-      wind: new Float32Array(nDays * N),
-      wdir: new Float32Array(nDays * N),
-      code: new Uint8Array(nDays * N),
-    };
-    pack.precip.fill(NaN); pack.temp.fill(NaN); pack.cloud.fill(NaN);
-    pack.wind.fill(NaN); pack.wdir.fill(NaN);
-    let k = 0;
-    for (const part of parts) {
-      for (const loc of part.locs) {
-        const daily = loc.daily || {};
-        for (let d = 0; d < nDays; d++) {
-          const idx = d * N + k;
-          pack.precip[idx] = num(daily.precipitation_sum && daily.precipitation_sum[d]);
-          pack.temp[idx] = num(daily.temperature_2m_max && daily.temperature_2m_max[d]);
-          pack.cloud[idx] = num(daily.cloud_cover_mean && daily.cloud_cover_mean[d]);
-          pack.wind[idx] = num(daily.wind_speed_10m_max && daily.wind_speed_10m_max[d]);
-          pack.wdir[idx] = num(daily.wind_direction_10m_dominant && daily.wind_direction_10m_dominant[d]);
-          pack.code[idx] = daily.weather_code && daily.weather_code[d] != null ? (daily.weather_code[d] | 0) : 0;
-        }
-        k++;
-      }
-    }
-    return pack;
-  }
-
-  function num(v) {
-    const n = Number(v);
-    return Number.isFinite(n) ? n : NaN;
-  }
-
-  async function fetchBatch(pts) {
-    const la = pts.map((p) => p[0].toFixed(2)).join(",");
-    const lo = pts.map((p) => p[1].toFixed(2)).join(",");
-    // 回退路径用 GET；每批 ≤80 点，避免 320 点 GET 触发 414
-    const url = `${OM}?latitude=${la}&longitude=${lo}&daily=${DAILY}&forecast_days=${FORECAST_DAYS}&timezone=Asia/Shanghai`;
-    const r = await fetch(url);
-    if (!r.ok) throw new Error("天气数据 HTTP " + r.status);
-    const j = await r.json();
-    if (j && j.error) throw new Error(j.reason || "天气数据错误");
-    const locs = Array.isArray(j) ? j : [j];
-    if (!locs[0] || !locs[0].daily) throw new Error("天气数据缺少 daily");
-    if (locs.length !== pts.length) throw new Error("天气数据点数不符");
-    return { times: (locs[0].daily.time) || [], locs };
   }
 
   /* ---------- 预警 ---------- */
@@ -467,9 +503,9 @@ const Weather = (() => {
     return { byName, byCity, byProv };
   }
 
-  function bestHit(str, map) {
+  function bestHit(str, map2) {
     let best = null, n = 1;
-    for (const [k, v] of map) {
+    for (const [k, v] of map2) {
       if (k.length > n && str.includes(k)) { best = v; n = k.length; }
     }
     return best;
@@ -532,7 +568,6 @@ const Weather = (() => {
   function setBasemap(kind) {
     currentBase = kind;
     if (!map) return;
-    // 卫星瓦片在海外经常缺块：标准底图垫在下面，缺块处仍能看路网。
     if (!map.hasLayer(baseStd)) baseStd.addTo(map);
     if (kind === "sat") {
       if (!map.hasLayer(baseSat)) baseSat.addTo(map);
@@ -546,52 +581,318 @@ const Weather = (() => {
     try { localStorage.setItem("railBasemap", kind); } catch (e) { /* ignore */ }
   }
 
+  /* ---------- 单点多模型气象图（渲染进站点详情） ---------- */
+  function codeEmoji(code) {
+    if (code >= 95) return "⛈️";
+    if (code >= 71 && code <= 77) return "🌨️";
+    if ((code >= 61 && code <= 67) || (code >= 80 && code <= 82)) return "🌧️";
+    if (code >= 51) return "🌦️";
+    if (code === 45 || code === 48) return "🌫️";
+    if (code >= 1 && code <= 3) return code === 1 ? "🌤️" : "☁️";
+    return "☀️";
+  }
+  function wxTxt(code, prec) {
+    if (code >= 95) return "雷雨";
+    if (code >= 71 && code <= 77) return "雪";
+    if ((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+      if (prec >= 8) return "强降水";
+      if (prec >= 3) return "中雨";
+      return "小雨";
+    }
+    if (code === 45 || code === 48) return "雾";
+    if (code >= 1 && code <= 3) return "多云";
+    return "晴";
+  }
+
+  async function fetchPoint(la, lo) {
+    const key = la.toFixed(2) + "," + lo.toFixed(2);
+    const hit = pointCache.get(key);
+    if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.pack;
+    const r = await fetch(`/api/weather/point?la=${la.toFixed(3)}&lo=${lo.toFixed(3)}`);
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const j = await r.json();
+    if (!j || !j.ok) throw new Error(j && j.error || "接口失败");
+    pointCache.set(key, { at: Date.now(), pack: j });
+    return j;
+  }
+
+  async function pointChart(container, la, lo, opts) {
+    if (!container) return;
+    opts = opts || {};
+    container.innerHTML = `<p class="mini">正在加载多模型预报…</p>`;
+    let pack;
+    try {
+      pack = await fetchPoint(la, lo);
+    } catch (e) {
+      container.innerHTML = `<p class="mini" style="color:#b91c1c">预报加载失败：${e.message || e}</p>`;
+      return;
+    }
+    drawPointChart(container, pack, opts);
+  }
+
+  function drawPointChart(container, pd, opts) {
+    const n = pd.nSteps;
+    const W = Math.max(320, Math.min(720, container.clientWidth || 460)), H = 216, dpr = Math.min(2, window.devicePixelRatio || 1);
+    container.innerHTML = "";
+    const cv = document.createElement("canvas");
+    cv.className = "wx-pt-cv";
+    const tip = document.createElement("div");
+    tip.className = "wx-pt-tip mini";
+    const meta = document.createElement("div");
+    meta.className = "mini";
+    container.appendChild(cv);
+    container.appendChild(tip);
+    container.appendChild(meta);
+    cv.width = W * dpr; cv.height = H * dpr;
+    cv.style.width = "100%"; cv.style.height = H + "px";
+    const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const padL = 34, padR = 34, padT = 24, iconH = 20, bodyT = padT + iconH, bodyB = H - 40, barH = 26, labelY = H - 8;
+    const plotW = W - padL - padR, plotH = bodyB - bodyT - barH;
+    // 小时刻度与图标行的抽稀步长：按画布宽度分档（视觉复检：6h 在 400px 宽仍粘连，窄画布降到 12h）
+    const hourEvery = plotW < 520 ? 12 : plotW < 760 ? 6 : 3;
+    const bm = pd.models.find((m) => m.id === "best_match") || pd.models[0];
+
+    let tMin = Infinity, tMax = -Infinity, pMax = 0;
+    for (const m of pd.models) {
+      for (const v of (m.temp || [])) { if (v != null) { if (v < tMin) tMin = v; if (v > tMax) tMax = v; } }
+    }
+    for (const v of (bm.precip || [])) if (v != null && v > pMax) pMax = v;
+    if (!Number.isFinite(tMin)) { container.innerHTML = `<p class="mini">无预报数据</p>`; return; }
+    tMin = Math.floor(tMin - 2); tMax = Math.ceil(tMax + 2);
+    const xOf = (i) => padL + (i / Math.max(1, n - 1)) * plotW;
+    const yT = (t) => bodyT + (1 - (t - tMin) / (tMax - tMin)) * plotH;
+    const yH = (h) => bodyT + (1 - Math.max(0, Math.min(100, h)) / 100) * plotH;
+
+    ctx.clearRect(0, 0, W, H);
+    // 日分隔与日期标签 + 每 3 小时时刻
+    ctx.font = "9px sans-serif";
+    ctx.textAlign = "center";
+    let lastDay = "";
+    for (let i = 0; i < n; i++) {
+      const d = pd.times[i].slice(0, 10), hm = pd.times[i].slice(11, 16);
+      const x = xOf(i);
+      if (d !== lastDay) {
+        lastDay = d;
+        ctx.strokeStyle = "rgba(100,116,139,.35)";
+        ctx.beginPath(); ctx.moveTo(x, bodyT - 6); ctx.lineTo(x, bodyB); ctx.stroke();
+        ctx.fillStyle = "#475569";
+        ctx.fillText(`${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`, x, labelY - 14);
+      }
+      if (hm.endsWith(":00") && Number(hm.slice(0, 2)) % hourEvery === 0) {
+        ctx.strokeStyle = "rgba(148,163,184,.25)";
+        ctx.beginPath(); ctx.moveTo(x, bodyT); ctx.lineTo(x, bodyB); ctx.stroke();
+        ctx.fillStyle = "#94a3b8";
+        ctx.fillText(hm.slice(0, 2), x, labelY);
+      }
+    }
+    // 温度刻度（左）
+    ctx.textAlign = "right";
+    for (let t = Math.ceil(tMin / 5) * 5; t <= tMax; t += 5) {
+      ctx.fillStyle = "#94a3b8";
+      ctx.fillText(String(t), padL - 4, yT(t) + 3);
+      ctx.strokeStyle = "rgba(148,163,184,.18)";
+      ctx.beginPath(); ctx.moveTo(padL, yT(t)); ctx.lineTo(W - padR, yT(t)); ctx.stroke();
+    }
+    // 湿度刻度（右）
+    ctx.textAlign = "left";
+    ctx.font = "bold 9px sans-serif";
+    for (const hh of [25, 50, 75]) {
+      ctx.fillStyle = "#0d9488";
+      ctx.fillText(hh + "%", W - padR + 4, yH(hh) + 3);
+    }
+    ctx.font = "9px sans-serif";
+    // 湿度带（综合模式）
+    if (bm && bm.rh) {
+      ctx.fillStyle = "rgba(13,148,136,.12)";
+      ctx.beginPath();
+      let pen = false;
+      for (let i = 0; i < n; i++) {
+        const v = bm.rh[i];
+        if (v == null) { pen = false; continue; }
+        const x = xOf(i), y = yH(v);
+        if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+      }
+      for (let i = n - 1; i >= 0; i--) {
+        const v = bm.rh[i];
+        if (v == null) continue;
+        ctx.lineTo(xOf(i), bodyB);
+        break;
+      }
+      ctx.lineTo(xOf(0), bodyB);
+      ctx.closePath();
+      ctx.fill();
+    }
+    // 降水柱
+    if (bm && bm.precip && pMax > 0.05) {
+      ctx.fillStyle = "rgba(59,130,246,.4)";
+      const bw = Math.max(1, plotW / n - 0.5);
+      for (let i = 0; i < n; i++) {
+        const v = bm.precip[i];
+        if (v == null || v <= 0) continue;
+        const h = Math.min(barH - 4, v / pMax * (barH - 4));
+        ctx.fillRect(xOf(i) - bw / 2, bodyB - h, bw, h);
+      }
+    }
+    // 各模型温度线
+    for (const m of pd.models) {
+      if (!m.temp) continue;
+      ctx.strokeStyle = MODEL_COLORS[m.id] || "#475569";
+      ctx.lineWidth = m.id === "best_match" ? 2 : 1.2;
+      ctx.beginPath();
+      let pen = false;
+      for (let i = 0; i < n; i++) {
+        const v = m.temp[i];
+        if (v == null) { pen = false; continue; }
+        const x = xOf(i), y = yT(v);
+        if (pen) ctx.lineTo(x, y); else { ctx.moveTo(x, y); pen = true; }
+      }
+      ctx.stroke();
+    }
+    // 天气图标行（与小时刻度同频抽稀，字号略缩留间隙）
+    ctx.font = "10px sans-serif";
+    ctx.textAlign = "center";
+    for (let i = 0; i < n; i++) {
+      const hm = pd.times[i].slice(11, 16);
+      if (!(hm.endsWith(":00") && Number(hm.slice(0, 2)) % hourEvery === 0)) continue;
+      const code = bm && bm.code ? bm.code[i] : 0;
+      ctx.fillText(codeEmoji(code), xOf(i), padT + 6);
+    }
+    // 现在线
+    const t0 = Date.parse(pd.times[0] + ":00+08:00");
+    const nowH = (Date.now() - t0);
+    if (nowH >= 0 && nowH <= (Date.parse(pd.times[n - 1] + ":00+08:00") - t0)) {
+      const x = xOf((nowH / (Date.parse(pd.times[n - 1] + ":00+08:00") - t0)) * (n - 1));
+      ctx.strokeStyle = "rgba(15,23,42,.65)";
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, bodyB); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "rgba(15,23,42,.75)";
+      ctx.textAlign = "left";
+      ctx.fillText("现在", x + 3, padT + 8);
+    }
+    // 到达标记
+    if (opts.arrAbs != null && bm) {
+      const tEnd = Date.parse(pd.times[n - 1] + ":00+08:00");
+      const span = (tEnd - t0) / (n - 1);
+      const i = Math.round(((t0 + (Number(opts.arrAbs) || 0) * 60000) - t0) / span);
+      const x = xOf(Math.max(0, Math.min(n - 1, i)));
+      if (x > padL && x < W - padR) {
+        ctx.strokeStyle = "#d97706";
+        ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, bodyB); ctx.stroke();
+        ctx.fillStyle = "#d97706";
+        ctx.textAlign = "center";
+        ctx.fillText("到达", x, padT + 8);
+        ctx.lineWidth = 1;
+      }
+    }
+
+    const upd = pd.fetchedAt ? new Date(pd.fetchedAt) : null;
+    const updTxt = upd ? new Intl.DateTimeFormat("zh-CN", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit" }).format(upd) : "";
+    meta.innerHTML = pd.models.map((m) => `<span style="color:${MODEL_COLORS[m.id]}">━ ${m.label}</span>`).join(" · ")
+      + ` · <span style="color:#0d9488">▨ 湿度</span> · 柱=降水 · 悬停看逐小时数值 · © Open-Meteo${updTxt ? " · 更新 " + updTxt : ""}`;
+
+    // 悬停：tooltip 显示逐小时具体数值（重绘仅 tooltip，不动画布）
+    cv.onmousemove = (ev) => {
+      const rect = cv.getBoundingClientRect();
+      const px = (ev.clientX - rect.left) * (W / rect.width);
+      const py = (ev.clientY - rect.top) * (H / rect.height);
+      const i = Math.max(0, Math.min(n - 1, Math.round((px - padL) / plotW * (n - 1))));
+      const iso = pd.times[i];
+      const code = bm && bm.code ? bm.code[i] : 0;
+      const prec = bm && bm.precip ? bm.precip[i] : null;
+      const rows = pd.models.filter((m) => m.temp && m.temp[i] != null).map((m) =>
+        `<span style="color:${MODEL_COLORS[m.id]}">${m.label} ${m.temp[i]}°C${m.rh && m.rh[i] != null ? ` · 湿${m.rh[i]}%` : ""}${m.wind && m.wind[i] != null ? ` · 风${m.wind[i]}km/h` : ""}</span>`);
+      tip.innerHTML = `<b>${iso.slice(5, 16).replace("T", " ")}</b> ${codeEmoji(code)} ${wxTxt(code, prec)}${prec ? ` · 降水${prec}mm/h` : ""}<br>${rows.join("<br>")}`;
+      tip.style.display = "block";
+      // 跟随光标 Y（不压顶部图标行），X 靠右时向左翻转（视觉验收 P1）
+      const tipH = tip.offsetHeight || 70;
+      tip.style.top = Math.max(26, Math.min(py - tipH - 10, H - tipH - 6)) + "px";
+      const flip = px > (rect.width * 0.62);
+      tip.classList.toggle("flip", flip);
+      tip.style.left = (flip ? Math.max(140, px) : Math.min(Math.max(px, 26), rect.width - 26)) + "px";
+    };
+    cv.onmouseleave = () => { tip.style.display = "none"; };
+  }
+
+  /* ---------- 对外：到达时刻天气（候选清单/详情用） ---------- */
+  async function arrivalWx(la, lo, minuteAbs) {
+    if (!CORE) return null;
+    const g = await ensureGrid();
+    const s = clampStep(stepForMinute(minuteAbs));
+    const temp = sample(g.temp, la, lo, s);
+    const prec = sample(g.precip, la, lo, s);
+    const code = sampleCode(la, lo, s);
+    if (!Number.isFinite(temp)) return null;
+    return { temp: Math.round(temp), precip: Number.isFinite(prec) ? Math.round(prec * 10) / 10 : null, code, txt: wxTxt(code, prec) };
+  }
+
   /* ---------- UI ---------- */
   function $(id) { return document.getElementById(id); }
 
   function legendHtml() {
     if (mode === "off") return "";
     if (mode === "rain") {
-      return `<div class="wx-leg">雨云（当日累计降水 + 云量）</div>
-        <div class="wx-bar rain"></div>
-        <div class="wx-scale"><span>晴</span><span>小雨</span><span>中雨</span><span>大雨</span></div>`;
+      return `<div class="wx-leg-inline">雨云（近端逐小时/远端 3h 累计降水；灰=阴/雾）</div>
+        <div class="wx-bar rain"></div>`;
     }
     if (mode === "temp") {
-      return `<div class="wx-leg">最高气温</div>
-        <div class="wx-bar temp"></div>
-        <div class="wx-scale"><span>-10°</span><span>10°</span><span>25°</span><span>40°</span></div>`;
+      return `<div class="wx-leg-inline">气温</div>
+        <div class="wx-bar temp"></div>`;
     }
     if (mode === "wind") {
-      return `<div class="wx-leg">最大风速（箭头=风向）</div>
-        <div class="wx-bar wind"></div>
-        <div class="wx-scale"><span>轻风</span><span>清劲</span><span>大风</span></div>`;
+      return `<div class="wx-leg-inline">风速（粒子流方向=风去的方向，颜色=强弱）</div>
+        <div class="wx-bar wind"></div>`;
     }
     if (mode === "warn") {
       const n = alarms.length;
-      return `<div class="wx-leg">黄色=明显降水 · 橙=较大 · 红=雷暴/极端
-        <br>圆点=中央气象台在发预警${n ? `（${n} 条）` : "（加载中/暂不可用）"}</div>`;
+      return `<div class="wx-leg-inline">黄=明显降水 · 橙=较大 · 红=雷暴/极端 · 圆点=气象台在发预警${n ? `（${n} 条）` : ""}</div>`;
     }
     return "";
   }
 
-  function refreshChrome() {
-    const row = $("wx-dayrow");
-    const src = $("wx-src");
-    const leg = $("wx-legend");
-    const sl = $("wx-day");
-    const lab = $("wx-day-label");
-    if (row) row.classList.toggle("hidden", mode === "off");
-    if (sl) {
-      sl.max = String((grid && grid.nDays ? grid.nDays : FORECAST_DAYS) - 1);
-      sl.value = String(clampDay(wxDay));
+  function buildTicks() {
+    const box = $("wx-ticks");
+    if (!box || !grid || !grid.times) return;
+    const n = grid.nSteps;
+    let html = "";
+    let lastDay = "";
+    for (let i = 0; i < n; i++) {
+      const d = grid.times[i].slice(0, 10);
+      if (d === lastDay) continue;
+      lastDay = d;
+      const today = chinaYmd();
+      const diff = Math.round((Date.parse(d + "T00:00:00+08:00") - Date.parse(today + "T00:00:00+08:00")) / 86400000);
+      const label = diff === 0 ? "今天" : diff === 1 ? "明天" : `${Number(d.slice(5, 7))}/${Number(d.slice(8, 10))}`;
+      html += `<span style="left:${(i / (n - 1) * 100).toFixed(2)}%" title="${d} ${weekdayName(d)}">${label}</span>`;
     }
-    if (lab) lab.textContent = mode === "off" ? "" : dayLabel(clampDay(wxDay));
+    box.innerHTML = html;
+  }
+
+  function refreshChrome() {
+    const tl = $("wx-timeline");
+    const on = mode !== "off";
+    if (tl) tl.classList.toggle("hidden", !on);
+    document.body.classList.toggle("wx-tl-on", on); // 详情面板/地图控件为时间轴让位
+    const sl = $("wx-day");
+    if (sl) {
+      sl.max = String((grid && grid.nSteps ? grid.nSteps : DEFAULT_STEPS) - 1);
+      sl.value = String(clampStep(wxStep));
+    }
+    const lab = $("wx-day-label");
+    if (lab) lab.textContent = on ? stepLabel(clampStep(wxStep)) : "";
+    if (on) buildTicks();
+    const leg = $("wx-legend");
     if (leg) leg.innerHTML = legendHtml();
+    const src = $("wx-src");
     if (src) {
-      src.textContent = mode === "off" ? "" :
+      const modelBit = wxModel !== "best_match" ? " · 模式 " + MODEL_LABELS[wxModel] : "";
+      src.textContent = !on ? "" :
         (mode === "warn"
           ? "预警来自中央气象台（实况）；色块为模式预报，仅供出行参考"
-          : "预报 © Open-Meteo（CMA GRAPES / ECMWF / DWD 等），全国格点约 1.5°，大部分可靠、非点对点精确");
+          : `预报 © Open-Meteo${modelBit} · 近72h逐小时+远期3h · 格点约1.5–2°，看趋势非点对点${grid && grid.fetchedAt ? " · 更新 " + new Date(grid.fetchedAt).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Shanghai" }) : ""}${grid && grid.stale ? " · 陈旧缓存（上游暂时不可用）" : ""}`);
     }
     const play = $("wx-play");
     if (play) play.textContent = playing ? "❚❚" : "▶";
@@ -622,7 +923,7 @@ const Weather = (() => {
       if (!layer) layer = new WxGrid();
       if (!map.hasLayer(layer)) layer.addTo(map);
       if (mode === "wind") {
-        if (!windLayer) windLayer = new WindArrows();
+        if (!windLayer) windLayer = new WindParticles();
         if (!map.hasLayer(windLayer)) windLayer.addTo(map);
       } else if (windLayer && map.hasLayer(windLayer)) map.removeLayer(windLayer);
       if (mode === "warn") {
@@ -639,7 +940,8 @@ const Weather = (() => {
   }
 
   function setStatusSafe(msg, err) {
-    if (typeof setStatus === "function" && msg) setStatus(msg, err);
+    // 空串是合法输入（清除"正在加载…"占位），不能按 falsy 过滤（视觉模型三轮观察项 #2）
+    if (typeof setStatus === "function" && msg !== undefined && msg !== null) setStatus(msg, err);
   }
 
   function stopPlay() {
@@ -654,17 +956,48 @@ const Weather = (() => {
     playing = true;
     refreshChrome();
     playTimer = setInterval(() => {
-      const max = (grid && grid.nDays ? grid.nDays : FORECAST_DAYS) - 1;
-      wxDay = wxDay >= max ? 0 : wxDay + 1;
+      const max = (grid && grid.nSteps ? grid.nSteps : DEFAULT_STEPS) - 1;
+      wxStep = wxStep >= max ? 0 : wxStep + 1;
       redraw();
-    }, 900);
+    }, 700);
   }
 
   function setDay(off) {
     pendingTravelOff = Number(off) || 0;
-    wxDay = forecastIndexForTravelOff(pendingTravelOff);
+    if (grid) wxStep = stepForTravelOff(pendingTravelOff);
     if (mode !== "off") redraw();
     else refreshChrome();
+  }
+
+  /* 全国图层模型切换：Windy 式"全图单模型、点位多模型"分工 */
+  async function setGridModel(m) {
+    if (!MODEL_LABELS[m] || m === wxModel) return;
+    wxModel = m;
+    try { localStorage.setItem("railWxModel", m); } catch (e) { /* ignore */ }
+    const cached = gridByModel.get(m);
+    if (cached) {
+      grid = cached;
+      wxStep = clampStep(stepForTravelOff(pendingTravelOff));
+      redraw();
+      return;
+    }
+    grid = null;
+    gridPromise = null;
+    refreshChrome();
+    if (mode === "off") return;
+    setStatusSafe("正在加载 " + MODEL_LABELS[m] + " 模式网格…");
+    try {
+      await ensureGrid();
+      setStatusSafe("");
+      redraw();
+    } catch (e) {
+      wxModel = "best_match";
+      const fallback = gridByModel.get("best_match");
+      if (fallback) { grid = fallback; redraw(); }
+      setStatusSafe(MODEL_LABELS[m] + " 模式暂不可用：" + (e.message || e), true);
+      const sel = $("wx-model");
+      if (sel) sel.value = "best_match";
+    }
   }
 
   function bindUi() {
@@ -675,9 +1008,11 @@ const Weather = (() => {
       el.onchange = () => setMode(el.value);
     });
     const sl = $("wx-day");
-    if (sl) sl.oninput = () => { wxDay = Number(sl.value) || 0; if (mode !== "off") redraw(); else refreshChrome(); };
+    if (sl) sl.oninput = () => { wxStep = Number(sl.value) || 0; if (mode !== "off") redraw(); else refreshChrome(); };
     const play = $("wx-play");
     if (play) play.onclick = () => togglePlay();
+    const msel = $("wx-model");
+    if (msel) msel.onchange = () => setGridModel(msel.value);
   }
 
   function init(opts) {
@@ -696,15 +1031,15 @@ const Weather = (() => {
       map.getPane("satLabels").style.pointerEvents = "none";
     }
     const tileOpts = { subdomains: "1234", attribution: "底图 © 高德地图", maxZoom: 17 };
-    function withRetry(layer) {
-      layer.on("tileerror", (e) => {
+    function withRetry(layer2) {
+      layer2.on("tileerror", (e) => {
         const t = e.tile;
         if (!t || t.dataset.retried) return;
         t.dataset.retried = "1";
         const src = t.src;
         setTimeout(() => { if (t.parentNode) t.src = src + (src.includes("?") ? "&" : "?") + "r=" + Date.now(); }, 500);
       });
-      return layer;
+      return layer2;
     }
     baseStd = withRetry(L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", tileOpts));
     baseSat = withRetry(L.tileLayer("https://webst0{s}.is.autonavi.com/appmaptile?style=6&x={x}&y={y}&z={z}", tileOpts));
@@ -716,9 +1051,20 @@ const Weather = (() => {
     if (radio) radio.checked = true;
     bindUi();
     pendingTravelOff = getDay();
-    wxDay = forecastIndexForTravelOff(pendingTravelOff);
+    try { wxModel = localStorage.getItem("railWxModel") || "best_match"; } catch (e) { /* ignore */ }
+    if (!MODEL_LABELS[wxModel]) wxModel = "best_match";
+    const msel = $("wx-model");
+    if (msel) msel.value = wxModel;
     refreshChrome();
+    // 恢复上次会话的天气图层选择
+    let savedMode = "off";
+    try { savedMode = localStorage.getItem("railWxMode") || "off"; } catch (e) { /* ignore */ }
+    if (savedMode !== "off" && ["rain", "temp", "wind", "warn"].includes(savedMode)) {
+      const r = document.querySelector(`input[name="wx"][value="${savedMode}"]`);
+      if (r) r.checked = true;
+      setMode(savedMode);
+    }
   }
 
-  return { init, setDay, setMode, setBasemap };
+  return { init, setDay, setMode, setBasemap, setGridModel, pointChart, arrivalWx };
 })();

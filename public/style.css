@@ -153,6 +153,75 @@ details > summary { cursor: pointer; font-weight: 600; font-size: 13.5px; color:
 .wx-bar.temp { background: linear-gradient(90deg, #1e3a8a, #3b82f6, #22c55e, #facc15, #f97316, #dc2626); }
 .wx-bar.wind { background: linear-gradient(90deg, #e0f2fe, #0ea5e9, #eab308, #b91c1c); }
 .wx-scale { display: flex; justify-content: space-between; font-size: 10.5px; color: #8a97a5; }
+
+/* ---------- 底部天气时间轴（含图例/出处） ---------- */
+#wx-timeline {
+  position: absolute; left: 0; right: 0; bottom: 0; z-index: 960;
+  background: rgba(255,255,255,.94); border-top: 1px solid var(--line);
+  padding: 6px 16px 4px; backdrop-filter: blur(4px);
+}
+.wx-tl-row { display: flex; align-items: center; gap: 12px; }
+#wx-timeline #wx-play {
+  border: 1px solid var(--line); background: #fff; border-radius: 6px;
+  padding: 3px 10px; font-size: 13px; color: var(--ink2); flex: 0 0 auto;
+}
+.wx-tl-mid { flex: 1; min-width: 0; }
+#wx-timeline input[type="range"] { width: 100%; margin: 0; }
+#wx-ticks { position: relative; height: 16px; margin-top: 2px; }
+#wx-ticks span {
+  position: absolute; top: 0; transform: translateX(-50%);
+  font-size: 11px; color: #475569; border-left: 1px solid #94a3b8; padding-left: 3px; line-height: 14px;
+  white-space: nowrap; font-weight: 600;
+}
+#wx-ticks span:first-child { transform: none; border-left: none; padding-left: 0; }
+#wx-ticks span:last-child { transform: translateX(-100%); }
+.wx-tl-label { flex: 0 0 auto; min-width: 96px; text-align: right; font-size: 13px; color: var(--ink); font-variant-numeric: tabular-nums; }
+.wx-tl-foot { display: flex; align-items: center; gap: 12px; margin-top: 2px; min-height: 14px; }
+.wx-tl-foot #wx-legend { flex: 0 0 auto; max-width: 46%; }
+.wx-tl-foot #wx-src { margin: 0; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wx-leg-inline { color: var(--ink2); font-size: 11px; line-height: 1.3; }
+.wx-tl-foot .wx-bar { height: 6px; width: 110px; margin: 1px 0; }
+
+/* ---------- 详情页多模型气象图 ---------- */
+#d-wx-sec { margin-top: 10px; }
+#d-wx-body { position: relative; }
+#d-wx-body .wx-pt-cv { display: block; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; cursor: crosshair; }
+.wx-pt-tip {
+  display: none; position: absolute; transform: translateX(-50%);
+  background: rgba(15,23,42,.93); color: #f1f5f9; border-radius: 6px;
+  padding: 4px 8px; font-size: 10.5px; line-height: 1.5; pointer-events: none;
+  z-index: 5; white-space: nowrap; box-shadow: 0 4px 12px rgba(15,35,60,.25);
+  max-width: 280px;
+}
+.wx-pt-tip.flip { transform: translateX(-100%); margin-left: 14px; }
+
+/* 天气时间轴显示时：详情面板与地图控件为其让位（视觉验收 P2；详情顶部让位顶栏） */
+body.wx-tl-on #detail { max-height: calc(100% - 152px); }
+body.wx-tl-on .leaflet-bottom { bottom: 58px; }
+
+/* 详情体滚动：flex 子项必须可收缩，否则内容撑破 max-height 盖住时间轴（视觉验收 R1/R2） */
+.d-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: #c3ccd6 transparent; padding-bottom: 14px; }
+.d-body::-webkit-scrollbar { width: 6px; }
+.d-body::-webkit-scrollbar-thumb { background: #c3ccd6; border-radius: 3px; }
+.d-body svg { overflow: visible; } /* 方案时间轴首刻度"06:00"不被 SVG 视窗左缘裁切（视觉模型三轮观察项 #1） */
+
+/* ---------- 图例（折叠式，并入图层面板） ---------- */
+#map-legend summary { cursor: pointer; color: var(--ink2); font-size: 12px; user-select: none; }
+#map-legend[open] summary { margin-bottom: 2px; }
+
+/* ---------- 候选清单 ---------- */
+#shortlist-body table { font-size: 12.5px; }
+#shortlist-body td { padding: 4px 6px; }
+#shortlist-body .sl-wx { font-size: 11.5px; color: var(--ink2); white-space: nowrap; }
+#shortlist-body .sl-rm { border: none; background: none; color: #94a3b8; cursor: pointer; padding: 0 3px; }
+#shortlist-body .sl-rm:hover { color: #b91c1c; }
+#shortlist-body .sl-dim { color: #94a3b8; }
+.d-head-btns { display: flex; gap: 6px; align-items: flex-start; }
+#d-star { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 2px 9px; font-size: 15px; color: #94a3b8; }
+#d-star.on { color: #d97706; border-color: #f59e0b; background: #fffbeb; }
+
+/* seg 控件键盘可达性：原生 input 被视觉隐藏，焦点转移到可见的 span 上 */
+.seg input:focus-visible + span { outline: 2px solid var(--accent2); outline-offset: 1px; border-radius: 4px; }
 body.sat-basemap .stn-label {
   color: #fff;
   text-shadow: 0 0 3px #000, 0 0 4px #000, 0 1px 2px #000;
@@ -173,7 +242,7 @@ body.sat-basemap .stn-label {
   padding: 7px 12px; font-size: 13px; box-shadow: 0 4px 14px rgba(15,35,60,.15);
 }
 #list-panel {
-  position: absolute; left: 12px; right: 12px; bottom: 12px; z-index: 950;
+  position: absolute; left: 12px; right: 12px; bottom: 58px; z-index: 950;
   max-height: 42%; display: flex; flex-direction: column; padding: 10px 12px 6px;
 }
 .list-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; margin-bottom: 6px; }
@@ -201,8 +270,8 @@ tr.faster-sep td {
 
 /* ---------- 详情卡 ---------- */
 #detail {
-  position: absolute; top: 12px; right: 12px; z-index: 1000; width: 440px; max-width: calc(100% - 24px);
-  max-height: calc(100% - 24px); background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  position: absolute; top: 64px; right: 12px; z-index: 1000; width: 440px; max-width: calc(100% - 24px);
+  max-height: calc(100% - 76px); background: #fff; border: 1px solid var(--line); border-radius: 12px;
   box-shadow: 0 10px 34px rgba(15,35,60,.2); display: flex; flex-direction: column;
 }
 .d-head { display: flex; justify-content: space-between; align-items: flex-start; padding: 12px 14px 8px; border-bottom: 1px solid var(--line); }

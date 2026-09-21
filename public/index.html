@@ -48,7 +48,7 @@
       <label class="chk"><input type="checkbox" id="constr-only"> 只看还能赶到这里的城市</label>
       <div id="cwarn" class="cwarn hidden"></div>
       <details id="constraint-more">
-        <summary>更多条件（时长 / 换乘 / 车种）</summary>
+        <summary>赶到行程的更多条件（衔接时长 / 换乘 / 车种——只作用于返程衔接）</summary>
         <div class="crow" style="margin-top:8px">
           <div>
             <label class="lbl" for="ctfrom-input">从候选地出发不早于</label>
@@ -110,9 +110,10 @@
     </div>
 
     <div class="sec">
-      <label class="lbl" title="区间用于过滤太近的目的地；若预算是不超过X小时，把下限拉到 0">④ 单程时间预算 <span id="budget-label" class="budget-label">3h00 – 4h00</span></label>
-      <input type="range" id="budget-min" min="0" max="600" step="15" value="180">
-      <input type="range" id="budget-max" min="0" max="600" step="15" value="240">
+      <label class="lbl" title="区间用于过滤太近的目的地；若预算是不超过X小时，把下限拉到 0">④ 单程时间预算 <span id="budget-label" class="budget-label">≤ 4h00</span></label>
+      <input type="range" id="budget-min" min="0" max="1440" step="15" value="0" title="预算下限：太近的目的地会被过滤">
+      <input type="range" id="budget-max" min="0" max="1440" step="15" value="240" title="预算上限">
+      <p class="mini" style="margin:2px 0 0">两条滑轨分别是区间<b>下限（上轨）</b>与<b>上限（下轨）</b>；只设上限就把下限拉到最左</p>
       <div class="presets">
         <button type="button" class="chip" data-budget="0,60">≤1h</button>
         <button type="button" class="chip" data-budget="0,120">≤2h</button>
@@ -122,7 +123,8 @@
         <button type="button" class="chip" data-budget="120,180">2–3h</button>
         <button type="button" class="chip" data-budget="180,240">3–4h</button>
         <button type="button" class="chip" data-budget="240,360">4–6h</button>
-        <button type="button" class="chip" data-budget="0,600">全部≤10h</button>
+        <button type="button" class="chip" data-budget="360,720">6–12h</button>
+        <button type="button" class="chip" data-budget="0,1440">≤24h</button>
       </div>
     </div>
 
@@ -166,6 +168,12 @@
       </div>
     </div>
     <div id="status" class="status"></div>
+    <button id="btn-table" type="button" class="ghost hidden" style="margin:6px 0 0;width:100%">全部目的地表格 ▲</button>
+
+    <div id="shortlist-sec" class="sec hidden">
+      <label class="lbl">★ 候选对比 <span class="mini" id="shortlist-note">详情里点 ☆ 收藏 · 数字取同城最优站</span></label>
+      <div id="shortlist-body"></div>
+    </div>
 
     <details id="dep-box" class="hidden" open>
       <summary>近期发车时刻 · <span id="dep-station"></span>（终到方向）</summary>
@@ -189,29 +197,41 @@
         <label><input type="radio" name="wx" value="wind"><span>风</span></label>
         <label><input type="radio" name="wx" value="warn"><span>预警</span></label>
       </div>
-      <div id="wx-dayrow" class="wx-dayrow hidden">
-        <input type="range" id="wx-day" min="0" max="15" value="0">
-        <div class="wx-day-meta">
-          <span id="wx-day-label">今天</span>
-          <button type="button" id="wx-play" title="按日播放云雨怎么走">▶</button>
-        </div>
-      </div>
-      <div id="wx-legend"></div>
-      <p class="mini" id="wx-src"></p>
-    </div>
-    <div id="legend" class="panel hidden">
-      <div class="legend-title">着色依据
-        <select id="colorby-sel">
-          <option value="typ">典型耗时（中位数）</option>
-          <option value="cnt">当日方案数（频次）</option>
+      <div class="legend-title" style="margin-top:8px">预报模式
+        <select id="wx-model" title="全国图层使用的预报模式；单点对比看城市详情里的多模型气象图">
+          <option value="best_match">综合</option>
+          <option value="ecmwf_ifs025">ECMWF</option>
+          <option value="gfs_seamless">GFS</option>
+          <option value="icon_seamless">ICON</option>
         </select>
       </div>
-      <div class="legend-title">配色
-        <select id="palette-sel"></select>
+      <div id="legend-wrap" class="hidden" style="margin-top:8px">
+        <div class="legend-title">着色依据
+          <select id="colorby-sel" style="width:auto">
+            <option value="typ">典型耗时（中位数）</option>
+            <option value="cnt">当日方案数（频次）</option>
+          </select>
+        </div>
+        <details id="map-legend">
+          <summary>图例说明</summary>
+          <div id="legend-body"></div>
+        </details>
       </div>
-      <div id="legend-body"></div>
     </div>
-    <button id="list-toggle" type="button" class="panel-btn hidden">目的地列表 ▲</button>
+    <div id="wx-timeline" class="hidden">
+      <div class="wx-tl-row">
+        <button type="button" id="wx-play" title="按小时播放云雨怎么走">▶</button>
+        <div class="wx-tl-mid">
+          <input type="range" id="wx-day" min="0" max="175" value="0" step="1">
+          <div id="wx-ticks"></div>
+        </div>
+        <span id="wx-day-label" class="wx-tl-label">今天</span>
+      </div>
+      <div class="wx-tl-foot">
+        <div id="wx-legend"></div>
+        <p class="mini" id="wx-src"></p>
+      </div>
+    </div>
     <div id="list-panel" class="panel hidden">
       <div class="list-head">
         <span id="list-title">目的地</span>
@@ -268,12 +288,19 @@
       <div id="d-title"></div>
       <div id="d-sub"></div>
     </div>
-    <button id="d-close" type="button">✕</button>
+    <div class="d-head-btns">
+      <button id="d-star" type="button" title="加入候选对比">☆</button>
+      <button id="d-close" type="button">✕</button>
+    </div>
   </div>
   <div class="d-body">
     <div id="d-chips" class="d-chips"></div>
     <div id="d-stats" class="d-stats"></div>
     <div id="d-const" class="d-const hidden"></div>
+    <div id="d-wx-sec">
+      <h4>到达地天气 · 多模型对比 <span class="mini">（线=各模式温度 · 绿带=湿度 · 柱=降水 · 悬停看逐小时数值）</span></h4>
+      <div id="d-wx-body"></div>
+    </div>
     <h4>当日方案时间轴 <span class="mini">（每条=一个不劣的出行方案，按出发时刻排布；颜色=换乘次数）</span></h4>
     <div id="d-strip"></div>
     <div class="strip-legend">
@@ -298,15 +325,26 @@
       <li>点击地图圆点或列表行查看<u>当日方案时间轴</u>与具体车次行程。</li>
       <li><b>底图与天气</b> — 可切到卫星影像看山湖地貌；雨云/温度/风是未来十余天的全国预报图层（一眼看哪片在下雨），预警叠中央气象台正在发布的信号。预报求「大部分可靠」，不是点对点气象保证。</li>
     </ol>
+    <details style="margin:10px 0">
+      <summary style="cursor:pointer"><b>术语说明</b></summary>
+      <div style="font-size:12.5px;line-height:1.75;color:#334155">
+        <b>典型耗时</b>：主档方案耗时的中位数——比"最快"更接近你实际会坐的那趟。<br>
+        <b>主档方案</b>：耗时不超过 min(预算上限, 最快+2小时) 的方案；表格里的"方案数 / 直达 / 典型 / P90"均按此口径，更慢或超预算的车不计入（在时间轴上淡色显示）。<br>
+        <b>P90 耗时</b>：主档方案耗时的 90 分位——错过最优车次后大约会变成多久。<br>
+        <b>≈ 标记</b>：典型耗时略低于预算下限（30 分钟弹性内）；把预算当"上限"理解时它同样符合。<br>
+        <b>后续约束列</b>：从该城市出发、仍能在截止前赶到约束目的地的最晚时刻（同城各站取最大）。
+      </div>
+    </details>
     <p class="mini">数据：中国铁路时刻表（社区 GTFS，周更快照；班次与站数见顶栏）。方案为时刻表演算结果，未含购票限售、临时调度、票价余票等因素。部分车次号带 A/B/C 等后缀（如 C4187B），是同号复开的真实不同班次；斜杠双号（如 G463/G466）是跨线运行中变更车次的同一列车——均非数据重复。</p>
     <div class="modal-actions">
-      <button id="help-demo" type="button" class="ghost">载入示例：长沙 · 3–4h · 明晚到上海</button>
+      <button id="help-demo" type="button" class="ghost">载入示例：上海（虹桥/上海南/上海）· ≤4h · 明天全天</button>
       <button id="help-close" type="button" class="primary">开始使用</button>
     </div>
   </div>
 </div>
 
 <script src="vendor/leaflet/leaflet.js"></script>
+<script src="weather_core.js"></script>
 <script src="weather.js"></script>
 <script src="app.js"></script>
 </body>

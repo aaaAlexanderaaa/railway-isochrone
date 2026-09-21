@@ -1,0 +1,18 @@
+{
+ "round": 20,
+ "identity": "自由职业者",
+ "origin": "济南",
+ "time_setting": "tomorrow_early",
+ "budget": [
+  2,
+  3
+ ],
+ "pref": "gdc",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "后天",
+  "time": "20:00"
+ },
+ "question": "我是自由职业者，在济南待烦了，想换个城市待一两天，电脑随身，上车能办公。明天一早我就想走，单程坐2到3个小时的火车都能接受，尽量只坐高铁或动车。后天20:00之前我必须回到济南，不能误事。帮我看看有哪些现实可行的选择？"
+}

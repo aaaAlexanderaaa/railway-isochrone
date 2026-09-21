@@ -7,3 +7,5 @@ __pycache__/
 tmp_*
 *.log
 .browse-profile/
+data/wx-cache/
+.zcode/
