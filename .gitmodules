@@ -1,0 +1,3 @@
+[submodule "vendor/chinese-railway-gtfs"]
+	path = vendor/chinese-railway-gtfs
+	url = https://github.com/wensimehrp/chinese-railway-gtfs.git

@@ -321,13 +321,40 @@ top = sorted(range(len(stations)), key=lambda i: -degree[i])[:60]
 print("top stations by degree:")
 print(" | ".join(f"{stations[i][0]}({degree[i]})" for i in top))
 
+def detect_release():
+    env = (os.environ.get("GTFS_RELEASE") or "").strip()
+    if env:
+        return env
+    for cand in (
+        os.path.join(os.path.dirname(os.path.abspath(GTFS_DIR)), "RELEASE"),
+        os.path.join(GTFS_DIR, "RELEASE"),
+        os.path.join("data", "RELEASE"),
+    ):
+        if os.path.isfile(cand):
+            return open(cand, encoding="utf-8").read().strip() or "unknown"
+    return "unknown"
+
+def calendar_label():
+    cal = os.path.join(GTFS_DIR, "calendar.txt")
+    if not os.path.isfile(cal):
+        return "每日开行（周更快照）"
+    with open(cal, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return "每日开行（周更快照）"
+    start = (rows[0].get("start_date") or "").strip()
+    if len(start) == 8 and start.isdigit():
+        return f"{start[:4]}-{start[4:6]}-{start[6:]} 起每日开行"
+    return "每日开行（周更快照）"
+
 # ---------- 输出 ----------
-os.makedirs(os.path.dirname(OUT), exist_ok=True)
+os.makedirs(os.path.dirname(OUT) or ".", exist_ok=True)
 data = {
     "meta": {
         "source": "wensimehrp/chinese-railway-gtfs",
-        "release": "gtfs-20260913-040340",
-        "calendar": "2026-07-21 起每日开行",
+        "release": detect_release(),
+        "calendar": calendar_label(),
+        "builtAt": __import__("datetime").datetime.now().strftime("%Y-%m-%d"),
         "stations": len(stations),
         "trips": len(off) - 1,
     },

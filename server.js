@@ -6,6 +6,7 @@ const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
 const { Engine } = require("./lib/engine");
+const { buildWeatherGrid } = require("./lib/weather_grid");
 
 const PORT = Number(process.env.PORT || 8787);
 const ROOT = __dirname;
@@ -14,6 +15,74 @@ const PUB = path.join(ROOT, "public");
 const engine = new Engine(path.join(PUB, "data", "net.json"));
 const cache = new Map(); // url -> Buffer
 const CACHE_MAX = 60;
+let alarmCache = { at: 0, body: null };
+let wxCache = { at: 0, body: null };
+let wxInflight = null;
+
+async function loadWeatherGrid() {
+  if (wxCache.body && Date.now() - wxCache.at < 2 * 60 * 60 * 1000) return wxCache.body;
+  if (wxInflight) return wxInflight;
+  wxInflight = (async () => {
+    try {
+      const body = await buildWeatherGrid();
+      body.fetchedAt = new Date().toISOString();
+      wxCache = { at: Date.now(), body };
+      return body;
+    } catch (err) {
+      if (wxCache.body) {
+        console.warn("[weather-grid] 使用过期缓存:", err.message);
+        return wxCache.body;
+      }
+      throw err;
+    } finally {
+      wxInflight = null;
+    }
+  })();
+  return wxInflight;
+}
+
+async function loadAlarms() {
+  if (alarmCache.body && Date.now() - alarmCache.at < 5 * 60 * 1000) return alarmCache.body;
+  const qs = "pageNo=1&pageSize=200&signaltype=&signallevel=&province=";
+  const urls = [
+    `https://www.nmc.cn/rest/findAlarm?${qs}`,
+    `http://www.nmc.cn/rest/findAlarm?${qs}`,
+  ];
+  let first = null, lastErr = null;
+  for (const url of urls) {
+    try {
+      const r = await fetch(url, { headers: { "User-Agent": "railway-map/1.0", Accept: "application/json" } });
+      if (r.ok) { first = await r.json(); break; }
+      lastErr = new Error("nmc HTTP " + r.status);
+    } catch (e) { lastErr = e; }
+  }
+  if (!first) throw lastErr || new Error("nmc unreachable");
+  const page = first.data && first.data.page;
+  let list = (page && page.list) || [];
+  const totalPage = (page && page.totalPage) || 1;
+  for (let p = 2; p <= Math.min(totalPage, 3); p++) {
+    try {
+      const r = await fetch(`https://www.nmc.cn/rest/findAlarm?pageNo=${p}&pageSize=200&signaltype=&signallevel=&province=`, {
+        headers: { "User-Agent": "railway-map/1.0", Accept: "application/json" },
+      });
+      if (!r.ok) break;
+      const j = await r.json();
+      const extra = j && j.data && j.data.page && j.data.page.list;
+      if (extra && extra.length) list = list.concat(extra);
+    } catch (e) { break; }
+  }
+  const body = {
+    ok: true,
+    source: "nmc.cn",
+    fetchedAt: new Date().toISOString(),
+    count: list.length,
+    list,
+    provinceAlarms: (first.data && first.data.provinceAlarms) || [],
+    stat: (first.data && first.data.stat) || null,
+  };
+  alarmCache = { at: Date.now(), body };
+  return body;
+}
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -26,13 +95,16 @@ const MIME = {
   ".woff2": "font/woff2",
 };
 
-function sendJson(req, res, code, obj) {
+function sendJson(req, res, code, obj, extraHeaders) {
   let body = JSON.stringify(obj);
   const enc = req.headers["accept-encoding"] || "";
   const headers = { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" };
+  if (extraHeaders) Object.assign(headers, extraHeaders);
   if (enc.includes("gzip")) {
     body = zlib.gzipSync(body);
     headers["Content-Encoding"] = "gzip";
+  } else {
+    body = Buffer.from(body, "utf8");
   }
   headers["Content-Length"] = body.length;
   res.writeHead(code, headers);
@@ -103,6 +175,18 @@ const server = http.createServer((req, res) => {
         const cls = q.get("cls") || "all";
         return sendJson(req, res, 200, { list: engine.departures(s, f, n, cls) });
       }
+      if (p === "/api/weather/alarms") {
+        loadAlarms()
+          .then((body) => sendJson(req, res, 200, body))
+          .catch((err) => sendJson(req, res, 502, { ok: false, error: String(err.message || err) }));
+        return;
+      }
+      if (p === "/api/weather/grid") {
+        loadWeatherGrid()
+          .then((body) => sendJson(req, res, 200, body, { "Cache-Control": "public, max-age=1800" }))
+          .catch((err) => sendJson(req, res, 502, { ok: false, error: String(err.message || err) }));
+        return;
+      }
       return sendJson(req, res, 404, { error: "unknown api" });
     } catch (err) {
       console.error("[api]", err);
@@ -126,4 +210,5 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`铁路可达圈 serving at http://127.0.0.1:${PORT}`);
+  loadWeatherGrid().catch((e) => console.warn("[weather-grid] 预热失败:", e.message));
 });

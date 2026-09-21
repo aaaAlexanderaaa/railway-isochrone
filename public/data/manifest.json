@@ -1,0 +1,24 @@
+{
+  "retentionDays": 31,
+  "current": "gtfs-20260920-041346",
+  "updatedAt": "2026-09-20T15:29:22Z",
+  "versions": [
+    {
+      "id": "gtfs-20260920-041346",
+      "date": "2026-09-20",
+      "stations": 5392,
+      "trips": 15081,
+      "file": "archive/gtfs-20260920-041346/net.json",
+      "publishedAt": "2026-09-20T04:13:52Z",
+      "builtAt": "2026-09-20T15:29:22Z"
+    },
+    {
+      "id": "gtfs-20260913-040340",
+      "date": "2026-09-13",
+      "stations": 5386,
+      "trips": 13891,
+      "file": "archive/gtfs-20260913-040340/net.json",
+      "archivedAt": "2026-09-20T15:29:21Z"
+    }
+  ]
+}

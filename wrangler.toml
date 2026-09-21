@@ -1,0 +1,11 @@
+name = "railway-map"
+compatibility_date = "2026-09-20"
+pages_build_output_dir = "public"
+
+# 部署：npx wrangler pages deploy
+# 或 DEPLOY=1 ./scripts/redeploy.sh（先更新数据集）
+#
+# Pages Functions（functions/）提供：
+#   /api/weather/alarms  中央气象台预警代理
+#   /api/weather/grid    全国 16 日格点（Open-Meteo，半小时缓存）
+# 可达性引擎在浏览器 Worker 中运行，不依赖 Node。

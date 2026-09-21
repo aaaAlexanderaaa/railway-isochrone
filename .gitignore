@@ -1,6 +1,9 @@
 node_modules/
 shots/
 data/output_gtfs.zip
+public/data/.net.*.json
+__pycache__/
+*.pyc
 tmp_*
 *.log
 .browse-profile/

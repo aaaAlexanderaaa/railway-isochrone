@@ -15,20 +15,50 @@ function fmtDur(min) {
 }
 function fmtClock(m) { return `${pad2(Math.floor(m / 60) % 24)}:${pad2(Math.round(m % 60))}`; }
 const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
-// 绝对分钟(相对今天00:00, 已含日期偏移) -> 日期感知文本, 始终带日期
+const CN_TZ = "Asia/Shanghai";
+// 产品时钟 = 北京时间。浏览器在 UTC/海外时，「今天」仍应对齐中国铁路运营日。
+function chinaParts(date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: CN_TZ, hourCycle: "h23",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit",
+  }).formatToParts(date || new Date());
+  const g = (t) => {
+    const x = parts.find((p) => p.type === t);
+    return x ? Number(x.value) : 0;
+  };
+  return { y: g("year"), m: g("month"), d: g("day"), h: g("hour"), min: g("minute") };
+}
+function chinaYmdStr(date) {
+  const p = chinaParts(date);
+  return `${p.y}-${pad2(p.m)}-${pad2(p.d)}`;
+}
+function chinaMidnightMs(date) {
+  return Date.parse(chinaYmdStr(date) + "T00:00:00+08:00");
+}
+function chinaNowMin() {
+  const p = chinaParts();
+  return p.h * 60 + p.min;
+}
+function nowAbsMin() {
+  return Math.floor((Date.now() - chinaMidnightMs()) / 60000);
+}
+function chinaOffParts(off) {
+  const t = chinaMidnightMs() + (Number(off) || 0) * 86400000;
+  const p = chinaParts(new Date(t));
+  p.wd = new Date(Date.UTC(p.y, p.m - 1, p.d)).getUTCDay();
+  return p;
+}
+// 绝对分钟(相对北京时间今天00:00, 已含日期偏移) -> 日期感知文本
 function fmtAbs(m) {
   const day = Math.floor(m / 1440);
   const hm = fmtClock(m);
-  const base = new Date(state.anchor || new Date());
-  base.setHours(0, 0, 0, 0);
-  base.setDate(base.getDate() + day);
-  return `${base.getMonth() + 1}/${base.getDate()}(${WEEKDAYS[base.getDay()]}) ${hm}`;
+  const p = chinaOffParts(day);
+  return `${p.m}/${p.d}(${WEEKDAYS[p.wd]}) ${hm}`;
 }
 function anchorDateStr(off) {
-  const base = new Date(state.anchor || new Date());
-  base.setHours(0, 0, 0, 0);
-  base.setDate(base.getDate() + off);
-  return `${base.getMonth() + 1}/${base.getDate()} ${WEEKDAYS[base.getDay()]}`;
+  const p = chinaOffParts(off);
+  return `${p.m}/${p.d} ${WEEKDAYS[p.wd]}`;
 }
 
 /* WGS84 -> GCJ02 (高德瓦片坐标系) */
@@ -102,12 +132,24 @@ function isLightColor(hex) {
 function colorCnt(c) { return RAMP[c < 2 ? 0 : c < 5 ? 1 : c < 10 ? 2 : c < 20 ? 3 : c < 40 ? 4 : c < 80 ? 5 : 6]; }
 
 const map = L.map("map", { preferCanvas: true, zoomControl: true, minZoom: 4, maxZoom: 17 }).setView(wgs2gcj(34.5, 108.5), 5);
-L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
-  subdomains: "1234", attribution: "底图 © 高德地图", maxZoom: 17,
-}).addTo(map);
 L.control.scale({ imperial: false }).addTo(map);
+map.on("click", (e) => {
+  if (state.origin || !originCombo || !STATIONS.length) return;
+  const t = e.originalEvent && e.originalEvent.target;
+  if (t && t.closest && t.closest("#map-layers, #legend, #list-panel, #list-toggle, .leaflet-control")) return;
+  let best = -1, bestD = 36;
+  const p = e.containerPoint;
+  for (let i = 0; i < STATIONS.length; i++) {
+    const s = STATIONS[i];
+    if (!s || !s.d) continue;
+    const [la, lo] = wgs2gcj(s.la, s.lo);
+    const d = p.distanceTo(map.latLngToContainerPoint([la, lo]));
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  if (best >= 0) onStationClick(best);
+});
 
-const sharedRenderer = L.canvas({ padding: 0.5 }); // 所有矢量标记共用一个渲染器
+const sharedRenderer = L.canvas({ padding: 0.5, tolerance: 10 }); // 灰点半径很小，扩大点击容差
 
 const layerGray = L.layerGroup().addTo(map);      // 全部车站(灰)
 const layerNear = L.layerGroup().addTo(map);      // 可达但低于预算下限
@@ -129,7 +171,7 @@ function buildGrayLayer() {
   layerGray.clearLayers();
   for (let i = 0; i < STATIONS.length; i++) {
     const s = STATIONS[i];
-    const m = mkMarker(s, 2.2, "#9aa7b4", 0.55, 0);
+    const m = mkMarker(s, 3.2, "#9aa7b4", 0.55, 0);
     m.bindTooltip(`${s.n}`, { className: "stn-tip", direction: "top" });
     m.on("click", () => onStationClick(i));
     layerGray.addLayer(m);
@@ -142,7 +184,21 @@ function tipText(i) {
   return `<b>${s.n}</b>（${s.c}）<br>典型 ${fmtDur(st.typ)} · 方案 ${st.cnt} · 直达 ${st.dir}`;
 }
 
+let originCombo = null;
+let destCombo = null;
+let queryGen = 0;
+function stopToComboItem(i) {
+  const s = STATIONS[i];
+  const city = cityIndex.find((c) => c.name === s.c);
+  if (city) return { type: "city", name: city.name, stops: city.stops.slice(), degree: city.degree };
+  return { type: "stn", name: s.n, stops: [i], degree: s.d };
+}
 function onStationClick(i) {
+  if (!state.origin && originCombo) {
+    originCombo.pick(stopToComboItem(i));
+    setStatus(`已把出发地设为「${STATIONS[i].c || STATIONS[i].n}」。选好看时间预算后点「查询可达性」。`);
+    return;
+  }
   if (state.stats.has(i)) selectDestination(i);
   else {
     const s = STATIONS[i];
@@ -172,6 +228,20 @@ function refreshLabels() {
   }
 }
 map.on("zoomend", refreshLabels);
+
+function abandonQuery() {
+  queryGen++;
+  state.queried = false;
+  state.journeys = new Map();
+  state.stats = new Map();
+  state.conLabel = null;
+  state.selected = null;
+  layerBand.clearLayers(); layerNear.clearLayers(); layerDim.clearLayers();
+  $("legend").classList.add("hidden");
+  $("list-panel").classList.add("hidden");
+  $("list-toggle").classList.add("hidden");
+  const det = $("detail"); if (det) det.classList.add("hidden");
+}
 
 function renderMapResult() {
   layerBand.clearLayers(); layerNear.clearLayers(); layerDim.clearLayers();
@@ -245,6 +315,8 @@ function fillDates() {
     cd.add(new Option(lbl, String(i)));
   }
   ds.value = "0"; cd.value = "0"; // B 端默认与 A 端同日, 避免一上来就日期错配
+  state.dateOff = 0;
+  state.constraint.dateOff = 0;
 }
 // 城市内车站多选: 勾选实际会用的车站
 function renderStationChecks(containerId, holder, onChange) {
@@ -296,10 +368,13 @@ function attachCombo(inputId, dropId, chosenId, onPick) {
   function search(q) {
     q = q.trim();
     if (!q) { render(cityIndex.slice(0, 10).map((c) => ({ type: "city", ...c }))); return; }
-    const cs = cityIndex.filter((c) => c.name.includes(q)).slice(0, 8)
+    const rank = (name) => name === q ? 0 : name.startsWith(q) ? 1 : name.includes(q) ? 2 : 9;
+    const cs = cityIndex.filter((c) => c.name.includes(q))
+      .sort((a, b) => rank(a.name) - rank(b.name) || b.degree - a.degree)
+      .slice(0, 8)
       .map((c) => ({ type: "city", ...c }));
     const ss = STATIONS.map((s, i) => ({ i, ...s })).filter((s) => s.n.includes(q) && s.d > 0)
-      .sort((a, b) => b.d - a.d).slice(0, 10 - Math.min(cs.length, 5))
+      .sort((a, b) => rank(a.n) - rank(b.n) || b.d - a.d).slice(0, 10 - Math.min(cs.length, 5))
       .map((s) => ({ type: "stn", name: s.n, stops: [s.i], degree: s.d }));
     render([...cs, ...ss]);
   }
@@ -357,6 +432,7 @@ function attachCombo(inputId, dropId, chosenId, onPick) {
     };
     onPick(it);
   }
+  return { pick };
 }
 
 /* ================= 统计 ================= */
@@ -370,7 +446,7 @@ function computeStats() {
     if (arrCut != null) js = js.filter((x) => x[1] <= arrCut);
     js = js.filter((x) => x[0] >= fAbs && x[0] <= tAbs); // 出发必须落在所选时段内
     if (state.dateOff === 0) {
-      const nowAbs0 = Math.floor((Date.now() - new Date(state.anchor || Date.now()).setHours(0, 0, 0, 0)) / 60000);
+      const nowAbs0 = nowAbsMin();
       js = js.filter((x) => x[0] >= nowAbs0); // 已发车班次不计入统计
     }
     if (!js.length) continue;
@@ -398,6 +474,22 @@ function computeStats() {
   }
 }
 
+function constraintByText() {
+  const c = state.constraint;
+  if (!c || !c.name) return "";
+  return c.timeMin == null ? `${anchorDateStr(c.dateOff)}当天内` : `${anchorDateStr(c.dateOff)} ${fmtClock(c.timeMin)} 前`;
+}
+function originToDestHint() {
+  const destName = state.constraint && state.constraint.name;
+  if (!destName || !state.origin) return "";
+  let best = null;
+  for (const [stopI, st] of state.stats) {
+    if (STATIONS[stopI].c !== destName) continue;
+    if (!best || st.fast < best.fast) best = st;
+  }
+  if (best) return ` 从「${state.origin.city}」到「${destName}」本身最快约 ${fmtDur(best.fast)}。`;
+  return ` 当前出发时段内，「${state.origin.city}」到不了「${destName}」本身（超出预算或无班次）。`;
+}
 function conAbs() {
   const c = state.constraint;
   return c.dateOff * 1440 + (c.timeMin == null ? 1439 : c.timeMin); // 留空 = 当天不限
@@ -443,6 +535,19 @@ function conMaxOf(stopI) {
 }
 
 /* ================= 查询 ================= */
+function focusDest() {
+  const di = $("dest-input");
+  const chosen = $("dest-chosen");
+  if (chosen && !chosen.classList.contains("hidden") && state.constraint.name) {
+    $("ctime-input").scrollIntoView({ block: "nearest" });
+    $("ctime-input").focus();
+    return;
+  }
+  if (di && !di.classList.contains("hidden")) {
+    di.scrollIntoView({ block: "nearest" });
+    di.focus();
+  }
+}
 function setStatus(msg, err) {
   const el = $("status");
   el.textContent = msg || "";
@@ -456,7 +561,67 @@ function timeToMin(v) {
 }
 const END_OF_DAY = 23 * 60 + 59; // <input type=time> 上限 23:59
 
+/* 浏览器 Worker 优先（Cloudflare Pages 无 Node）；失败时回退本机 /api */
+let engineWorker = null, workerReady = false;
+const _pending = new Map();
+let _rpc = 1;
+
+function callWorker(method, args) {
+  return new Promise((resolve, reject) => {
+    if (!engineWorker) { reject(new Error("引擎未启动")); return; }
+    const id = _rpc++;
+    const timer = setTimeout(() => {
+      if (_pending.has(id)) {
+        _pending.delete(id);
+        reject(new Error("引擎计算超时"));
+      }
+    }, 60000);
+    _pending.set(id, {
+      resolve: (v) => { clearTimeout(timer); resolve(v); },
+      reject: (e) => { clearTimeout(timer); reject(e); },
+    });
+    engineWorker.postMessage({ id, method, args: args || {} });
+  });
+}
+
+async function initEngine() {
+  if (typeof Worker === "undefined") return;
+  engineWorker = new Worker("engine-worker.js");
+  engineWorker.onmessage = (ev) => {
+    const { id, ok, result, error } = ev.data || {};
+    const p = _pending.get(id);
+    if (!p) return;
+    _pending.delete(id);
+    if (ok) p.resolve(result);
+    else p.reject(new Error(error || "引擎错误"));
+  };
+  engineWorker.onerror = (e) => console.error("[engine-worker]", e.message || e);
+  await callWorker("boot", { netUrl: "data/net.json" });
+  workerReady = true;
+}
+
 async function api(url) {
+  if (workerReady) {
+    const u = new URL(url, location.origin);
+    const p = u.pathname, q = u.searchParams;
+    if (p === "/api/meta") return callWorker("meta");
+    if (p === "/api/reach") return callWorker("reach", { o: q.get("o"), f: q.get("f"), t: q.get("t"), cls: q.get("cls") });
+    if (p === "/api/itinerary") {
+      return callWorker("itinerary", {
+        o: q.get("o"), f: q.get("f"), t: q.get("t"), cls: q.get("cls"),
+        st: q.get("st"), s: q.get("s"), j: q.get("j"),
+      });
+    }
+    if (p === "/api/constraint") {
+      return callWorker("constraint", {
+        d: q.get("d"), T: q.get("T"), floor: q.get("floor"),
+        xf: q.get("xf"), dur: q.get("dur"), cls: q.get("cls"),
+      });
+    }
+    if (p === "/api/departures") {
+      return callWorker("departures", { s: q.get("s"), f: q.get("f"), n: q.get("n"), cls: q.get("cls") });
+    }
+  }
   const r = await fetch(url);
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
@@ -470,20 +635,24 @@ async function runQuery() {
   if (!state.origin) { setStatus("请先选择出发地（左侧第①步）。", true); return; }
   const btn = $("btn-query");
   btn.disabled = true;
+  const gen = ++queryGen;
   setStatus("计算中…（引擎对全天时刻表做轮廓搜索，约 1–2 秒）");
   try {
-    state.anchor = state.anchor || new Date();
-    // 傍晚出发且未设"最晚到达"时, 默认截断到次日凌晨 02:00, 避免"凌晨才到"被计入
-    if (state.arriveBy == null && state.dateOff === 0 && state.fromMin >= 16 * 60) {
-      state.arriveBy = 1440 + 2 * 60;
-      $("arrive-by").value = "02:00";
-      setStatus("已按晚间出发自动设置「最晚到达 = 次日 02:00」，可在左侧修改或清空。");
+    state.anchor = state.anchor || new Date(chinaMidnightMs());
+    const arriveField = timeToMin($("arrive-by").value);
+    if (arriveField == null) {
+      // 晚间出发默认不把凌晨才到的方案算进去；不写入输入框，以免被看成「必须 02:00 赶到」。
+      if (state.dateOff === 0 && state.fromMin >= 16 * 60) state.arriveBy = 1440 + 2 * 60;
+      else state.arriveBy = null;
+    } else {
+      state.arriveBy = state.dateOff * 1440 + arriveField;
     }
     const o = state.origin.stops.join(",");
     const f = state.dateOff * 1440 + state.fromMin;
     const t = state.dateOff * 1440 + state.untilMin;
     if (t <= f) throw new Error("出发时段无效：结束时间需晚于开始时间");
     const data = await api(`/api/reach?o=${o}&f=${f}&t=${t}&cls=${state.cls}`);
+    if (gen !== queryGen) return;
     state.journeys = new Map(data.journeys);
     computeStats();
     state.queried = true;
@@ -498,18 +667,19 @@ async function runQuery() {
       const conT = conAbs();
       if (conT < travelStart + 30) {
         cw.classList.remove("hidden");
-        cw.textContent = `⚠ B 端到达截止（${anchorDateStr(c.dateOff)} ${fmtClock(conT)}）早于出发日 ${anchorDateStr(state.dateOff)} ${fmtClock(travelStart)} 出发后的最早可能到达——交集必然近乎为空。请核对 B 端的日期/时间。`;
+        cw.textContent = `⚠ 「赶到 ${c.name}」的截止（${anchorDateStr(c.dateOff)} ${fmtClock(conT)}）早于出发日 ${anchorDateStr(state.dateOff)} ${fmtClock(travelStart)} 出发后的最早可能到达——一个都赶不上。请核对赶到该地的日期/时间。`;
       } else if (conT < travelStart + state.bmax) {
         cw.classList.remove("hidden");
-        cw.textContent = `提示：截止时间距出发仅 ${fmtDur(conT - travelStart)}，短于预算上限 ${fmtDur(state.bmax)}——较远的目的地会被判不可行，这属于约束本身收紧，不是数据缺失。`;
+        cw.textContent = `提示：赶到「${c.name}」的截止距出发仅 ${fmtDur(conT - travelStart)}，短于预算上限 ${fmtDur(state.bmax)}——较远的目的地会被判不可行，这属于约束本身收紧，不是数据缺失。`;
       } else cw.classList.add("hidden");
       const cd = await api(`/api/constraint?d=${c.stops.join(",")}&T=${conAbs()}&floor=${conFloor()}&xf=${c.xf}&dur=${c.dur}&cls=${c.cls}`);
+      if (gen !== queryGen) return;
       state.conLabel = cd.latest; state.conArr = cd.arrAt;
     } else {
       cw.classList.add("hidden");
     }
 
-    if (state.conLabel && !$("sort-sel").dataset.touched) { $("sort-sel").value = "con"; setStatus("已加载 B 端条件，列表默认按约束余量排序（可在右上切换）。"); }
+    if (state.conLabel && !$("sort-sel").dataset.touched) $("sort-sel").value = "con";
     renderMapResult();
     renderOrigin();
     renderList();
@@ -520,26 +690,36 @@ async function runQuery() {
     const bandRows = cityRows();
     const nCities = bandRows.length;
     const nStops = bandRows.reduce((acc, r) => acc + [...state.stats.keys()].filter((k) => STATIONS[k].c === STATIONS[r.stopI].c && state.stats.get(k).typ >= 30).length, 0);
-    const nowM = Math.floor((Date.now() - new Date(state.anchor || Date.now()).setHours(0, 0, 0, 0)) / 60000);
+    const nowM = nowAbsMin();
     const nowTxt = state.dateOff === 0 ? ` · 现在 ${fmtClock(nowM)}` : "";
     const pastWarn = state.dateOff === 0 && state.fromMin < nowM - 2 ? ` · 已自动从现在 ${fmtClock(nowM)} 起算（你设的时段起点更早，其间班次已发车不计）` : "";
-    if (nStops === 0) {
+    const destName = state.constraint.on && state.constraint.name ? state.constraint.name : null;
+    const onlyOn = !!(destName && state.constraint.only);
+    const byText = destName ? constraintByText() : "";
+    const engineBit = ` · 引擎 ${((data.stats.ms || 0) / 1000).toFixed(1)}s`;
+    if (nCities === 0 && onlyOn) {
+      setStatus(`从「${state.origin.city}」出发、预算带内没有城市还能在 ${byText}赶到「${destName}」。这是约束下的空结果，不是查询失败。可放宽单程时长/换乘，或取消「只看还能赶到该城市」。${originToDestHint()}${engineBit}`, true);
+    } else if (nStops === 0) {
       setStatus("当前条件下时间预算带内没有可达目的地。可放宽预算/时段，或切换到明天全天。", true);
     } else {
-      setStatus(`✓ 今天是 ${anchorDateStr(0)}${nowTxt} · 查询 ${anchorDateStr(state.dateOff)} ${fmtClock(state.dateOff * 1440 + state.fromMin)}–${fmtClock(state.dateOff * 1440 + state.untilMin)} · 预算带内 ${nCities} 城（${nStops} 站）${pastWarn}${state.conLabel ? " · 已加载 B 端条件" : ""} · 引擎 ${((data.stats.ms || 0) / 1000).toFixed(1)}s`);
+      const destBit = destName
+        ? (onlyOn ? ` · 还能赶到「${destName}」${nCities} 城` : ` · 已加载赶到「${destName}」的可行性（见列表「后续约束」）`)
+        : " · 还要赶到某地？填左侧②再查";
+      setStatus(`✓ 今天是 ${anchorDateStr(0)}${nowTxt} · 查询 ${anchorDateStr(state.dateOff)} ${fmtClock(state.dateOff * 1440 + state.fromMin)}–${fmtClock(state.dateOff * 1440 + state.untilMin)} · 预算带内 ${onlyOn && state.rowTotal != null ? state.rowTotal : nCities} 城（${nStops} 站）${pastWarn}${destBit}${engineBit}`);
     }
     loadDepartures(f);
   } catch (err) {
+    if (gen !== queryGen) return;
     setStatus(`查询失败：${err.message}`, true);
   } finally {
-    btn.disabled = false;
+    if (gen === queryGen) btn.disabled = false;
   }
 }
 
 async function loadDepartures(fromAbs) {
   if (!state.origin) return;
   try {
-    const f2 = state.dateOff === 0 ? Math.max(fromAbs, Math.floor((Date.now() - new Date(state.anchor || Date.now()).setHours(0, 0, 0, 0)) / 60000)) : fromAbs;
+    const f2 = state.dateOff === 0 ? Math.max(fromAbs, nowAbsMin()) : fromAbs;
     // 合并同城各站的近期发车
     const all = [];
     for (const sIdx of state.origin.stops.slice(0, 10)) {
@@ -637,7 +817,8 @@ function renderList() {
   const oa = originAnchor();
   const total = rows.length;
   const onlyOn = conOn && state.constraint.only;
-  $("list-title").textContent = `预算带 ${fmtDur(state.bmin)}–${fmtDur(state.bmax)} 内${onlyOn && state.rowTotal != null ? ` ${state.rowTotal} 城` : ""}${onlyOn ? `，满足 B 端条件 ${total} 城` : ` ${total} 城`} · 带 ≈ 者略快于下限${sizeTh > 0 ? " · 已按车站规模过滤" : ""}`;
+  const destName = conOn ? state.constraint.name : "";
+  $("list-title").textContent = `预算带 ${fmtDur(state.bmin)}–${fmtDur(state.bmax)} 内${onlyOn && state.rowTotal != null ? ` ${state.rowTotal} 城` : ""}${onlyOn ? `，还能赶到「${destName}」${total} 城` : ` ${total} 城`} · 带 ≈ 者略快于下限${sizeTh > 0 ? " · 已按车站规模过滤" : ""}`;
   const max = 300;
   // 主表: 预算带内
   const mainRows = rows.slice(0, max).map((r) => rowHtml(r, conOn));
@@ -683,7 +864,7 @@ function renderList() {
     if (list.length > 25) fastRows.push(`<tr><td colspan="8" class="st">…更快到达共 ${list.length} 城，仅列前 25（按接近预算带排序）</td></tr>`);
   }
   const emptyMsg = conOn && total === 0 && fastRows.length === 0
-    ? `<tr><td colspan="8" class="st" style="padding:14px 8px">当前条件下没有目的地同时满足 A 端与 B 端条件。可放宽预算/换乘上限；B 端也可放宽"到 B 时长/截止时间"，或取消勾选"只看同时满足 B 端条件"再逐个核对各城的"最晚可行出发"。</td></tr>`
+    ? `<tr><td colspan="8" class="st" style="padding:14px 8px">从「${state.origin ? state.origin.city : "出发地"}」出发、当前预算内没有城市还能在 ${constraintByText()}赶到「${state.constraint.name}」。这是约束下的空结果，不是查询失败。可放宽单程时长/换乘，或取消「只看还能赶到该城市」再对照各城的最晚出发时刻。${originToDestHint()}</td></tr>`
     : "";
   $("list-body").innerHTML = emptyMsg + mainRows.join("") +
     (fastRows.length ? `<tr class="faster-sep"><td colspan="8">以下更快到达（典型耗时低于预算下限 ${fmtDur(state.bmin)}，同样符合"预算=上限"的理解）</td></tr>` : "") +
@@ -732,7 +913,7 @@ function selectDestination(stopI, force) {
   });
   const inBand = st && inBandQ(st);
   $("d-sub").textContent = st
-    ? `典型 ${fmtDur(st.typ)} · ${inBand ? (st.typ < state.bmin ? "典型略低于预算下限（弹性内）" : "在预算带内") : (st.typ < state.bmin ? "耗时低于预算下限" : "耗时超出预算上限")}${st.js[0] ? (() => { const na = state.dateOff === 0 ? Math.floor((Date.now() - new Date(state.anchor || Date.now()).setHours(0, 0, 0, 0)) / 60000) : -1; const nx = na >= 0 ? (st.js.find(j => j[0] >= na) || st.js[0]) : st.js[0]; return ` · ${state.dateOff === 0 ? "下一班" : "首班"} ${fmtAbs(nx[0])}（自 ${STATIONS[nx[5]].n} 出发）`; })() : ""}`
+    ? `典型 ${fmtDur(st.typ)} · ${inBand ? (st.typ < state.bmin ? "典型略低于预算下限（弹性内）" : "在预算带内") : (st.typ < state.bmin ? "耗时低于预算下限" : "耗时超出预算上限")}${st.js[0] ? (() => { const na = state.dateOff === 0 ? nowAbsMin() : -1; const nx = na >= 0 ? (st.js.find(j => j[0] >= na) || st.js[0]) : st.js[0]; return ` · ${state.dateOff === 0 ? "下一班" : "首班"} ${fmtAbs(nx[0])}（自 ${STATIONS[nx[5]].n} 出发）`; })() : ""}`
     : "当前条件下不可达";
   if (!st) { $("d-stats").innerHTML = ""; $("d-strip").innerHTML = ""; $("d-itin").innerHTML = ""; $("d-const").classList.add("hidden"); return; }
 
@@ -766,7 +947,7 @@ function selectDestination(stopI, force) {
     const el0 = $("d-const");
     el0.classList.remove("hidden");
     el0.className = "d-const ok";
-    el0.innerHTML = `<b>这里就是对端 B（${c.name}）本身</b>——它已在 B 端圈内，无需另查衔接。`;
+    el0.innerHTML = `<b>这里就是必须赶到的「${c.name}」本身</b>——已经在目的地上，无需另查衔接。`;
   } else if (conOn) {
     const tag = conTag(stopI); // 本站口径
     // 同城口径(与列表一致): 最晚出发取各站最大, 到达取各站最早
@@ -786,22 +967,23 @@ function selectDestination(stopI, force) {
     const dTime = c.timeMin == null ? "" : fmtClock(c.timeMin), dDay = anchorDateStr(c.dateOff);
     const byText = c.timeMin == null ? `${dDay}当天内` : `${dDay} ${dTime} 前`;
     el.innerHTML = cityTag.cls === "bad"
-      ? `<b>B 端条件：无法在 ${byText}从 ${s.c} 到达 ${dName}</b>——发车早于可到达时刻，或${c.xf === 0 ? "无直达班次" : c.xf > 0 ? `换乘≤${c.xf}次内无解` : "无可行衔接"}（本站 ${s.n}：${tag.txt}）`
+      ? `<b>赶到「${dName}」：无法在 ${byText}从 ${s.c} 到达</b>——发车早于可到达时刻，或${c.xf === 0 ? "无直达班次" : c.xf > 0 ? `换乘≤${c.xf}次内无解` : "无可行衔接"}（本站 ${s.n}：${tag.txt}）`
       : cityTag.cls === "ok"
-        ? `<b>B 端条件：</b>（同城口径）${cityTag.txt}，${byText}可达 <b>${dName}</b>${state.conArr && state.conArr[stopI] >= 0 ? `<span class="mini">（该班 ${fmtClock(state.conArr[stopI])} 到）</span>` : ""}<span class="mini">（本站 ${s.n}：${tag.txt}）</span><br>
-           <span class="mini">（按时刻表${c.cls && c.cls !== "all" ? (c.cls === "gdc" ? "高铁动车" : "普速") : "全部"}班次计算${c.dur > 0 ? `，到 B 限时 ${fmtDur(c.dur)}` : ""}${c.xf >= 0 ? `，${c.xf === 0 ? "仅直达" : `换乘 ≤${c.xf} 次`}` : ""}，同站换乘已留 15 分钟衔接；提前购票仍建议留余量${c.stops.length > 1 ? `；B 含 ${c.stops.length} 站（${c.stops.slice(0, 4).map((i) => STATIONS[i].n).join("、")}${c.stops.length > 4 ? "…" : ""}），到站≠到家，请留意市内接驳` : ""}）</span><br>
+        ? `<b>赶到「${dName}」：</b>（同城口径）${cityTag.txt}，${byText}可达 <b>${dName}</b>${state.conArr && state.conArr[stopI] >= 0 ? `<span class="mini">（该班 ${fmtClock(state.conArr[stopI])} 到）</span>` : ""}<span class="mini">（本站 ${s.n}：${tag.txt}）</span><br>
+           <span class="mini">（按时刻表${c.cls && c.cls !== "all" ? (c.cls === "gdc" ? "高铁动车" : "普速") : "全部"}班次计算${c.dur > 0 ? `，赶到该地限时 ${fmtDur(c.dur)}` : ""}${c.xf >= 0 ? `，${c.xf === 0 ? "仅直达" : `换乘 ≤${c.xf} 次`}` : ""}，同站换乘已留 15 分钟衔接；提前购票仍建议留余量${c.stops.length > 1 ? `；该地含 ${c.stops.length} 站（${c.stops.slice(0, 4).map((i) => STATIONS[i].n).join("、")}${c.stops.length > 4 ? "…" : ""}），到站≠到家，请留意市内接驳` : ""}）</span><br>
            <button type="button" class="ghost" id="btn-xleg">查看 ${s.c}（各站）→ ${dName} 的方案</button>`
-        : `<b>B 端条件（注意）：</b>（同城口径）${cityTag.txt}——才能${byText}到达 <b>${dName}</b><span class="mini">（本站 ${s.n}：${tag.txt}）</span><br>
-           <span class="mini">（按时刻表${c.cls && c.cls !== "all" ? (c.cls === "gdc" ? "高铁动车" : "普速") : "全部"}班次计算${c.dur > 0 ? `，到 B 限时 ${fmtDur(c.dur)}` : ""}${c.xf >= 0 ? `，${c.xf === 0 ? "仅直达" : `换乘 ≤${c.xf} 次`}` : ""}，同站换乘已留 15 分钟衔接）</span><br>
+        : `<b>赶到「${dName}」（注意）：</b>（同城口径）${cityTag.txt}——才能${byText}到达 <b>${dName}</b><span class="mini">（本站 ${s.n}：${tag.txt}）</span><br>
+           <span class="mini">（按时刻表${c.cls && c.cls !== "all" ? (c.cls === "gdc" ? "高铁动车" : "普速") : "全部"}班次计算${c.dur > 0 ? `，赶到该地限时 ${fmtDur(c.dur)}` : ""}${c.xf >= 0 ? `，${c.xf === 0 ? "仅直达" : `换乘 ≤${c.xf} 次`}` : ""}，同站换乘已留 15 分钟衔接）</span><br>
            <button type="button" class="ghost" id="btn-xleg">查看 ${s.c}（各站）→ ${dName} 的方案</button>`;
     const b = $("btn-xleg");
     if (b) b.onclick = () => loadXLeg(stopI);
+    loadXLeg(stopI);
   } else {
     $("d-const").classList.add("hidden");
   }
 
-  renderStrip(st.js, null, { coreCut: st.coreCut });
-  $("d-itin").innerHTML = "";
+  renderStrip(st.js, null, { coreCut: st.coreCut, listTitle: "去程车次" });
+  if (st.js && st.js.length) loadItinerary(st.js[0], stopI);
 
   // 选中环
   if (selectedRing) map.removeLayer(selectedRing);
@@ -866,7 +1048,7 @@ function renderStrip(js, container, opts) {
     const pre = opts.labelOf ? opts.labelOf(b.j) : (multiOrigin && os != null ? `自${STATIONS[os].n} ` : "");
     const suf = opts.arrOf ? opts.arrOf(b.j, i) : "";
     const y = 26 + b.li * 16;
-    const nowAbs0 = state.dateOff === 0 ? Math.floor((Date.now() - new Date(state.anchor || Date.now()).setHours(0, 0, 0, 0)) / 60000) : -1;
+    const nowAbs0 = state.dateOff === 0 ? nowAbsMin() : -1;
     const departed = dep < nowAbs0 && nowAbs0 >= 0;
     const label = w >= 40 ? `<text x="${x(dep) + 3}" y="${y + 8.5}" font-size="9" fill="${departed ? "#9aa7b4" : "#fff"}" style="pointer-events:none">${fmtClock(dep)}${w >= 58 ? "→" + fmtClock(arr) : ""}${w >= 110 ? " " + (NAMES[ft] || "") : ""}</text>` : "";
     // 命中区比可见条更宽更高, 便于点击; 悬停提示挂在命中区上
@@ -886,7 +1068,7 @@ function renderStrip(js, container, opts) {
   }).join("");
   el.innerHTML = (opts.title ? `<p class="mini">${opts.title}</p>` : "") +
     `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}${rects}${cap}</svg>` +
-    `<details class="jlist"><summary>${opts.listTitle || "以文字查看全部"} ${bars.length} 班<span class="mini">（同一列车跨线/上下行可能显示双号，如 G3287/G3290，为同一班车）</span></summary><div class="jrows">${listRows}</div></details>`;
+    `<details class="jlist" open><summary>${opts.listTitle || "车次时刻（文字）"} ${bars.length} 班<span class="mini">（同一列车跨线可能显示双号，如 G3287/G3290，为同一班车）</span></summary><div class="jrows">${listRows}</div></details>`;
   el.querySelectorAll(".bar").forEach((r) => {
     r.onclick = () => {
       const i = Number(r.dataset.i);
@@ -981,7 +1163,7 @@ async function loadXLeg(stopI) {
         labelOf: (j) => `自${STATIONS[j[5]].n} `,
         arrOf: (j, i) => ` ${fmtClock(j[1])} 到${STATIONS[allStops[i]].n}`,
         onBar: (j, s2) => loadItinerary(j, s2, { o: origins, f, t }),
-        listTitle: "以文字查看返程",
+        listTitle: "返程车次",
       });
     }
   } catch (e) {
@@ -993,6 +1175,7 @@ async function loadXLeg(stopI) {
 
 /* ================= 图例 ================= */
 function updateLegend() {
+  if (!state.queried) return;
   $("legend").classList.remove("hidden");
   const byTyp = state.colorBy === "typ";
   const labels = byTyp
@@ -1007,11 +1190,14 @@ function updateLegend() {
 
 /* ================= 事件 ================= */
 function initEvents() {
-  attachCombo("origin-input", "origin-drop", "origin-chosen", (it) => {
+  originCombo = attachCombo("origin-input", "origin-drop", "origin-chosen", (it) => {
     if (!it) {
       state.origin = null;
       $("origin-stns").classList.add("hidden"); $("origin-stns").innerHTML = "";
-      renderOrigin(); return;
+      renderOrigin();
+      abandonQuery();
+      setStatus("出发地已清除。请重新选择出发地。");
+      return;
     }
     state.origin = {
       name: it.name, city: it.type === "city" ? it.name : STATIONS[it.stops[0]].c,
@@ -1019,19 +1205,24 @@ function initEvents() {
     };
     renderOrigin();
     renderStationChecks("origin-stns", state.origin, () => { if (state.queried) runQuery(); });
+    if (state.queried) runQuery();
   });
-  attachCombo("dest-input", "dest-drop", "dest-chosen", (it) => {
+  destCombo = attachCombo("dest-input", "dest-drop", "dest-chosen", (it) => {
     if (!it) {
       state.constraint.name = null; state.constraint.stops = []; state.constraint.allStops = [];
       $("dest-stns").classList.add("hidden"); $("dest-stns").innerHTML = "";
+      if (state.queried) runQuery();
       return;
     }
     const det = $("detail"); if (det) det.classList.add("hidden");
     state.constraint.name = it.name;
     state.constraint.allStops = it.stops.slice();
     state.constraint.stops = it.stops.slice();
+    state.constraint.on = true;
     renderStationChecks("dest-stns", state.constraint, () => { if (state.queried) runQuery(); });
-    $("constraint-box").open = true;
+    $("constr-only").checked = true;
+    state.constraint.only = true;
+    if (state.queried) runQuery();
   });
 
   $("date-sel").onchange = (e) => {
@@ -1042,6 +1233,7 @@ function initEvents() {
     }
     const av = timeToMin($("arrive-by").value);
     state.arriveBy = av == null ? null : state.dateOff * 1440 + av;
+    if (typeof Weather !== "undefined") Weather.setDay(state.dateOff);
     if (state.dateOff === 0) applyNowPreset();
     else setWindow(6 * 60, END_OF_DAY); // 换未来日期重置为全天, 避免沿用深夜窗口
   };
@@ -1134,6 +1326,34 @@ function initEvents() {
   $("maxkm-input").onchange = () => renderList();
 
   $("btn-query").onclick = runQuery;
+  $("btn-goto-place").onclick = () => {
+    $("constr-only").checked = true;
+    state.constraint.only = true;
+    focusDest();
+    if (state.constraint.name) {
+      setStatus("请确认赶到「" + state.constraint.name + "」的日期和「不晚于」时刻，然后点查询。");
+    } else {
+      setStatus("请输入必须赶到的城市（如白云机场、青岛），再选赶到日期和「不晚于」时刻，然后点查询。要赶回出发地请点「还要赶回出发地」。");
+    }
+  };
+  $("btn-return-home").onclick = () => {
+    if (!state.origin) { setStatus("请先选择出发地，才能设「赶回出发地」。", true); return; }
+    const city = cityIndex.find((c) => c.name === state.origin.city);
+    const it = city
+      ? { type: "city", name: city.name, stops: city.stops.slice(), degree: city.degree }
+      : { type: "stn", name: state.origin.name, stops: state.origin.stops.slice(), degree: 0 };
+    const backOff = (state.dateOff === 0 && state.fromMin >= 16 * 60)
+      ? Math.min(13, 1)
+      : state.dateOff;
+    $("cdate-sel").value = String(backOff);
+    state.constraint.dateOff = backOff;
+    $("constr-only").checked = true;
+    state.constraint.only = true;
+    destCombo.pick(it);
+    $("ctime-input").focus();
+    setStatus("已设为赶回「" + state.origin.city + "」（日期先跟出发日相同，晚间出发则默认次日）。请确认回到的日期和「不晚于」时刻，然后点查询。");
+  };
+  $("btn-demo").onclick = demoFill;
   $("d-close").onclick = () => { $("detail").classList.add("hidden"); if (selectedRing) { map.removeLayer(selectedRing); selectedRing = null; } };
   $("list-toggle").onclick = () => {
     const p = $("list-panel");
@@ -1144,7 +1364,6 @@ function initEvents() {
   $("btn-help").onclick = () => $("help-overlay").classList.remove("hidden");
   $("help-close").onclick = () => { $("help-overlay").classList.add("hidden"); try { localStorage.setItem("railHelpDismissed", "1"); } catch (e) { } };
   $("help-demo").onclick = () => { $("help-overlay").classList.add("hidden"); demoFill(); };
-  $("btn-demo").onclick = demoFill;
 
   // 回车快捷查询
   document.addEventListener("keydown", (e) => {
@@ -1171,11 +1390,16 @@ function setWindow(a, b) {
   syncPresetChips();
   if (state.queried) runQuery();
 }
+function snap5(m) {
+  m = Math.max(0, Number(m) || 0);
+  return Math.min(23 * 60 + 55, Math.ceil(m / 5) * 5);
+}
 function applyNowPreset() {
-  const now = new Date();
-  setWindow(Math.min(now.getHours() * 60 + now.getMinutes(), 23 * 60), END_OF_DAY);
+  const hm = snap5(chinaNowMin());
+  setWindow(Math.min(hm, 23 * 60), END_OF_DAY);
   $("date-sel").value = "0";
   state.dateOff = 0;
+  if (typeof Weather !== "undefined") Weather.setDay(0);
 }
 
 function demoFill() {
@@ -1209,8 +1433,9 @@ function demoFill() {
     $("dest-stns").classList.add("hidden"); $("dest-stns").innerHTML = "";
   };
   state.constraint.name = "上海"; state.constraint.allStops = ds.stops.slice(); state.constraint.stops = ds.stops.slice(); state.constraint.on = true;
+  state.constraint.only = true;
+  $("constr-only").checked = true;
   renderStationChecks("dest-stns", state.constraint, () => { if (state.queried) runQuery(); });
-  $("constraint-box").open = true;
   $("cdate-sel").value = "1"; state.constraint.dateOff = 1;
   $("ctime-input").value = "19:00"; state.constraint.timeMin = 19 * 60;
 
@@ -1221,15 +1446,28 @@ function demoFill() {
 /* ================= 启动 ================= */
 async function boot() {
   try {
-    state.anchor = new Date();
+    state.anchor = new Date(chinaMidnightMs());
+    $("data-badge").textContent = "正在加载时刻表…";
+    try { await initEngine(); } catch (e) { console.warn("Worker 引擎不可用，回退 HTTP", e); }
     const meta = await api("/api/meta");
     STATIONS = meta.stations; NAMES = meta.names; META = meta.meta;
-    $("data-badge").textContent = `时刻表周更快照 ${(m => m ? `${m[1]}-${m[2]}-${m[3]}` : META.release)(META.release.match(/(\d{4})(\d{2})(\d{2})/))} · ${META.trips.toLocaleString()} 班/日 · ${META.stations.toLocaleString()} 站 · 购票以 12306 为准`;
+    const rel = String(META.release || "");
+    const dm = rel.match(/(\d{4})(\d{2})(\d{2})/);
+    const dateTxt = dm ? `${dm[1]}-${dm[2]}-${dm[3]}` : (META.builtAt || rel || "未知");
+    $("data-badge").textContent = `时刻表 ${dateTxt} · ${Number(META.trips).toLocaleString("zh-CN")} 班/日 · ${Number(META.stations).toLocaleString("zh-CN")} 站`;
+    $("data-badge").title = `购票以 12306 为准${META.calendar ? " · " + META.calendar : ""} · ${rel}`;
     buildCityIndex();
     buildGrayLayer();
     refreshLabels();
     initEvents();
     fillDates(); // 14 天日期选项
+    if (typeof Weather !== "undefined") {
+      Weather.init({ map, getDay: () => state.dateOff, stations: STATIONS });
+    } else {
+      L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
+        subdomains: "1234", attribution: "底图 © 高德地图", maxZoom: 17,
+      }).addTo(map);
+    }
     // 配色选择器
     const ps = $("palette-sel");
     Object.entries(PALETTES).forEach(([k, v]) => ps.add(new Option(v.name, k)));
@@ -1238,10 +1476,12 @@ async function boot() {
     ps.value = pal in PALETTES ? pal : "rainbow";
     setPalette(ps.value);
     ps.onchange = (e) => setPalette(e.target.value);
-    const now = new Date();
-    state.fromMin = Math.min(now.getHours() * 60 + now.getMinutes(), 23 * 60);
+    const hm = snap5(chinaNowMin());
+    state.fromMin = Math.min(hm, 23 * 60);
     state.untilMin = END_OF_DAY;
-    $("from-time").value = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+    $("from-time").value = `${pad2(Math.floor(state.fromMin / 60))}:${pad2(state.fromMin % 60)}`;
+    const tl = $("today-label");
+    if (tl) tl.textContent = `北京时间 ${anchorDateStr(0)}`;
     $("until-time").value = "23:59";
     setStatus("选择出发地后点击「查询可达性」。首次使用可点「使用说明」或直接试示例场景。");
     let dismissed = false;

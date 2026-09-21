@@ -1,0 +1,18 @@
+{
+ "round": 13,
+ "identity": "第一次来",
+ "origin": "徐州",
+ "time_setting": "tomorrow",
+ "budget": [
+  4,
+  5
+ ],
+ "pref": "direct",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "明天",
+  "time": "12:00"
+ },
+ "question": "我第一次来徐州，想顺便再去一个没去过的城市。我打算明天白天出发，5个小时上下的样子，最好全程直达，懒得换乘。我明天12:00前得赶回徐州。帮我看看有哪些现实可行的选择？"
+}

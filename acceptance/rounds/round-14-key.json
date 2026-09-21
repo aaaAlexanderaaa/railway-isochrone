@@ -1,0 +1,18 @@
+{
+ "round": 14,
+ "identity": "退休夫妇",
+ "origin": "济南",
+ "time_setting": "tomorrow",
+ "budget": [
+  2,
+  3
+ ],
+ "pref": "transfer1",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "明天",
+  "time": "15:00"
+ },
+ "question": "我们老两口退休了，时间充裕，但坐太久车吃不消。我打算明天白天出发，大概3个小时左右的车程，换一次车可以接受，两次就算了。我明天15:00前得赶回济南。帮我看看有哪些现实可行的选择？"
+}

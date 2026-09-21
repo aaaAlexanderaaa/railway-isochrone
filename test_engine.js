@@ -59,6 +59,7 @@ console.log(statsFor("上海虹桥"));
 
 console.log("\n=== 远期日守护: 第 4/7/13 天 长沙(城市) 08:00-22:00 gdc ===");
 // 天偏移编码曾只有 2 位, dateOff>=4 溢出进车次号 -> 无班次/张冠李戴(2026-09-20 修复)
+let refN = null, refFast = null;
 for (const D of [4, 7, 13]) {
   const rd = e.reach(e.cityStops.get("长沙"), D * 1440 + 480, D * 1440 + 1320, "gdc");
   const j = rd.journeys.get(idx("上海虹桥"));
@@ -66,7 +67,12 @@ for (const D of [4, 7, 13]) {
   const fast = j ? Math.round(Math.min(...j.map((x) => x[1] - x[0]))) : -1;
   const dayOk = j ? Math.floor(Math.min(...j.map((x) => x[0])) / 1440) === D : false;
   console.log(`day+${D}: 方案数=${n} 最快=${fast}分 日期归属=${dayOk}`);
-  assert(n === 18, "day+" + D + " 方案数应为 18(每日同图), 实际 " + n);
-  assert(fast === 240, "day+" + D + " 最快应为 240 分, 实际 " + fast);
+  assert(n > 0, "day+" + D + " 长沙→上海虹桥 应有方案, 实际 " + n);
+  assert(fast >= 180 && fast <= 420, "day+" + D + " 最快应在 3–7h 现实区间, 实际 " + fast);
   assert(dayOk, "day+" + D + " 班次日期归属错误——天偏移编码回归");
+  if (refN == null) { refN = n; refFast = fast; }
+  else {
+    assert(n === refN, "每日同图：day+" + D + " 方案数应与 day+4 相同 (" + refN + "), 实际 " + n);
+    assert(fast === refFast, "每日同图：day+" + D + " 最快应与 day+4 相同 (" + refFast + "), 实际 " + fast);
+  }
 }

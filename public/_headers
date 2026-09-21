@@ -1,0 +1,11 @@
+/*
+  X-Content-Type-Options: nosniff
+
+/data/net.json
+  Cache-Control: public, max-age=3600
+
+/data/archive/*
+  Cache-Control: public, max-age=86400
+
+/vendor/*
+  Cache-Control: public, max-age=604800

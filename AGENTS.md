@@ -33,10 +33,11 @@
 
 ## 4. 本项目的执行事实
 
-- 数据管线：`etl.py`（GTFS → public/data/net.json）；引擎：`lib/engine.js`；
-  服务：`node server.js` → http://127.0.0.1:8787（零依赖）。
+- 数据管线：`scripts/update_dataset.py`（上游 submodule + GitHub Releases → etl →
+  `public/data/net.json`，旧快照保留 ≥31 天）；引擎：`lib/engine.js`（浏览器 Worker 同构）；
+  服务：`node server.js` → http://127.0.0.1:8787（零依赖）。Cloudflare Pages 托管 `public/`。
 - 浏览器验收工具：`node browse.js start|stop|run '<JSON动作>'`（常驻 Chromium，
   供验收 subagent 以 DOM 方式驱动页面）。
 - 引擎回归基线：`node test_engine.js`（已知现实线路耗时/班次）。
-- 时钟与日期：全部时刻为"相对查询日 00:00 的绝对分钟"，跨日为 1440+；
-  GTFS 数据为周更快照，产品界面须明示数据版本。
+- 时钟与日期：界面「今天 / 现在」一律按 **北京时间（Asia/Shanghai）**，与铁路运营日和天气格点对齐；海外时区打开页面也不会把「今天」算成当地日历。
+  引擎内部仍是「相对查询日 00:00 的绝对分钟」，跨日为 1440+。GTFS 为周更快照，顶栏明示数据版本。

@@ -79,9 +79,17 @@ def load_cities():
     return [c for c, _ in top], big
 
 
+CN_TZ = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def now_cn():
+    """产品「今天/现在」按北京时间，任务书必须同一时钟。"""
+    return datetime.datetime.now(CN_TZ)
+
+
 def hm_now(rng):
     # "现在"必须取真实时钟(取整到5分钟), 否则任务书时刻与页面时钟矛盾
-    now = datetime.datetime.now()
+    now = now_cn()
     m = (now.minute // 5) * 5
     return f"{now.hour:02d}:{m:02d}"
 
@@ -100,12 +108,13 @@ def budget_sentence(rng):
 
 
 def gen(round_id):
-    rng = random.Random(f"rail-radius-r{round_id}-{datetime.date.today().isoformat()}")
+    today = now_cn().date()
+    rng = random.Random(f"rail-radius-r{round_id}-{today.isoformat()}")
     cities, big = load_cities()
     origin = rng.choice(cities[:40]) if rng.random() < 0.7 else rng.choice(cities)
     ident_key, ident = rng.choice(IDENTITIES)
     t_key, t_tpl = rng.choice(TIME_SETTINGS)
-    weekday = WEEKDAY[datetime.date.today().weekday()]
+    weekday = WEEKDAY[today.weekday()]
     time_part = hm_now(rng) if t_key == "now" else (f"{rng.randint(18,21):02d}:{rng.choice(['00','30'])}" if t_key == "tonight" else "")
     time_sent = t_tpl.format(weekday=weekday, hm=time_part)
     budget_sent, (bmin, bmax) = budget_sentence(rng)
@@ -143,28 +152,7 @@ def gen(round_id):
 
 产品地址：http://127.0.0.1:8787 （服务已在运行）
 
-## 浏览器操作方式（工具说明，与产品无关）
-
-工作目录：~/railway-map
-
-常驻浏览器已启动，用下面的命令驱动（每次 run 都在同一浏览器会话里，页面状态保留）：
-
-node browse.js run '<JSON动作数组>'
-
-动作：
-- {{"op":"goto","arg":"http://127.0.0.1:8787/"}}
-- {{"op":"wait","arg":2000}}                     等待毫秒
-- {{"op":"click","arg":"#css选择器"}}
-- {{"op":"clickText","arg":"可见文字"}}
-- {{"op":"type","arg":"#输入框||文字"}}
-- {{"op":"fill","arg":"#输入框||文字"}}
-- {{"op":"select","arg":"#下拉框||值"}}
-- {{"op":"check","arg":"#复选框"}}
-- {{"op":"read","arg":"#元素"}}                   读文本
-- {{"op":"rows","arg":"行选择器"}}                读多行
-- {{"op":"eval","arg":"JS表达式"}}                读页面状态（只读，不许改）
-- {{"op":"shot","arg":"图.png"}}                  截图到 shots/
-- {{"op":"note","arg":"备注"}}
+请用图形浏览器直接打开这个地址，像普通人一样点击、输入、阅读页面。不要读源代码、不要调用 /api、不要改任何文件、不要重启服务。
 
 ## 规则
 

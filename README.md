@@ -17,8 +17,17 @@ node server.js
 ```
 
 依赖：Node.js ≥ 18（无第三方 npm 运行时依赖；leaflet 已本地 vendor）。
-数据更新：从 [wensimehrp/chinese-railway-gtfs](https://github.com/wensimehrp/chinese-railway-gtfs)
-Releases 下载最新 `output_gtfs.zip` → 解压到 `data/gtfs` → `python etl.py`。
+
+数据更新（推荐）：上游仓库作为 git submodule（`vendor/chinese-railway-gtfs`），
+时刻表本体在 GitHub Releases。一条命令拉取最新快照、重建路网、归档旧版：
+
+```bash
+./scripts/redeploy.sh                 # 更新数据集
+DEPLOY=1 ./scripts/redeploy.sh        # 更新后 wrangler pages deploy
+```
+
+归档策略：`public/data/archive/<release>/net.json` 至少保留 **31 天**，并且始终留着
+上一份以便回滚；满一个月之后的更早版本才会滚动删除。清单见 `public/data/manifest.json`。
 
 ## 产品能力
 
@@ -38,16 +47,12 @@ Releases 下载最新 `output_gtfs.zip` → 解压到 `data/gtfs` → `python et
 - **当日方案时间轴**：每个目的地一张图，一条 = 一个不劣方案（按出发时刻排布，
   颜色 = 换乘次数，宽条内标注出发时刻与车次），直观呈现"偶尔很快"还是"全天都容易到"；
   点击可展开完整行程（车次、停站、换乘停留）。
-- **对端 B（镜像条件）**：第二个锚点 B，条件与 A 端**完全镜像**——
-  **到 B 时长上限**（"回 y 小时内"，≤1h…≤6h）、**换乘上限**（直达/≤1-3次）、**车种**、
-  **B 端出发时段下限**、**到达时刻上限**（留空=当天不限）。结果 = A 端圈 ∩ B 端圈；
-  B 填出发地即"往返圈"（去 x 小时内、回 y 小时内，对称）。
+- **还要赶到某地 / 赶回出发地**：第二个锚点（必须赶到的城市），条件与出发侧镜像——
+  **赶到该地时长上限**、**换乘上限**、**车种**、**从候选地出发不早于**、
+  **到达时刻上限**（留空=当天不限）。结果 = 出发圈 ∩ 还能按时赶到该城的城市；
+  填出发地即「往返圈」。空交集会明说「挤不出余量」，而不是伪装成查询失败。
   引擎按"乘车段数分层 + 到达时刻追踪"实现分层反向扫描；
-  结果 =「出发地在所选时段/预算内能到的地方」∩「还能按时赶到 B 的地方」），
-  每个候选目的地（城市级，
-  取同城各站最大值）会标注**最晚可行出发时刻**（反向扫描全网时刻表得出），可一键只看
-  满足约束的选项；详情内可展开"同城各站 → B"的次日方案时间轴（标注出发车站）。
-  目的地设为出发城市即为返程可行性检查（去返不对称时尤其有用）。
+  每个候选目的地会标注**最晚可行出发时刻**；详情内可展开"同城各站 → 该城"的方案时间轴。
 - **同城车站切换**：详情卡展示同城其他可达车站及各自典型耗时，一键切换
   （不同车站班次差异可能很大，如武汉/汉口/武昌）。
 - **出发/约束目的地车站多选**：选择城市后可勾选实际使用的车站（默认全选），
@@ -64,18 +69,31 @@ Releases 下载最新 `output_gtfs.zip` → 解压到 `data/gtfs` → `python et
 - **车种过滤**（高铁动车 G/D/C / 普速）、**着色依据切换**（典型耗时 / 方案数）、
   按典型/最快/方案数/直达数/约束余量/距离排序、车站规模过滤（大站视图减少小站噪声）。
 - 出发站**近期发车时刻**（支持"我现在在车站"的场景）。
+- **卫星底图**：高德标准路网 / 卫星影像（含注记）可切换，便于看山湖地貌而不是空白行政区划。
+- **全国天气图层**（跟着出发日期，也可单独按日播放）：雨云、温度、风、预警。
+  预报来自 [Open-Meteo](https://open-meteo.com)（CMA GRAPES / ECMWF / DWD 等公开模式，约 16 天）；
+  预警代理中央气象台正在发布的信号。设计目标是「一眼看出哪片在下雨、风往哪边走」，
+  不追求点对点精确。
 - 引擎层面统一施加 **15 分钟同站换乘最短衔接**（直达不受影响），避免把
   4 分钟衔接这类现实中赶不上的方案算作可行。
 
 ## 架构
 
 ```
-data/output_gtfs.zip    GTFS 原始数据（周更）
-data/gtfs/              解压
-etl.py                  GTFS -> public/data/net.json（紧凑数组: 车站/车次/停站时刻）
-lib/engine.js           可达性引擎（Node, 零依赖）
-server.js               HTTP 服务: 静态文件 + /api/*
-public/                 前端（原生 JS + Leaflet, 本地 vendor）
+vendor/chinese-railway-gtfs   上游 git submodule（仓库本身不含 GTFS 文件）
+scripts/update_dataset.py     拉 Releases → etl → 归档 → 满月滚动删除
+scripts/redeploy.sh           更新数据集；DEPLOY=1 时部署 Cloudflare Pages
+data/gtfs/                    当前 GTFS 解压
+etl.py                        GTFS -> public/data/net.json
+public/data/net.json          当前路网（浏览器 Worker / Node 共用）
+public/data/archive/          旧路网快照（≥31 天）
+lib/engine.js                 可达性引擎（Node + 浏览器 Worker 同构）
+public/engine-worker.js       浏览器侧计算（Cloudflare 静态托管不需要 Node API）
+lib/weather_grid.js           Open-Meteo 全国格点聚合（POST，避免 GET 414）
+server.js                     本地 HTTP: 静态文件 + /api/*（含预警/格点代理）
+functions/api/weather/alarms  Cloudflare Pages Function：中央气象台预警代理
+functions/api/weather/grid    Cloudflare Pages Function：全国天气格点
+public/                       前端（原生 JS + Leaflet, 本地 vendor）
 ```
 
 ### 引擎设计
@@ -99,13 +117,29 @@ public/                 前端（原生 JS + Leaflet, 本地 vendor）
 - `GET /api/itinerary?…&st=<采样时刻>&s=<站>&j=<乘车数>` 行程重构
 - `GET /api/constraint?d=<目的地站id,…>&T=<截止,绝对分>&floor=<最早>` 反向最晚出发
 - `GET /api/departures?s=<站>&f=<起>&n=<数>` 近期发车
+- `GET /api/weather/alarms` 中央气象台在发预警（本地 server / Cloudflare Function 代理；无 CORS）
+- `GET /api/weather/grid` 全国 16 日雨云/温度/风格点（Open-Meteo 服务端聚合，约半小时缓存）
 
-时间约定：绝对分钟 = 相对查询日 00:00 的偏移（跨日车次为 1440+，GTFS 原生支持）。
+时间约定：界面「今天/现在」按北京时间；引擎绝对分钟 = 相对该查询日 00:00 的偏移（跨日车次为 1440+，GTFS 原生支持）。
+
+可达性查询在浏览器 Web Worker 中完成（`public/engine-worker.js` 加载 `net.json`），
+因此 Cloudflare Pages 只托管静态文件即可；本地 `server.js` 仍保留同款 `/api/reach` 等接口，
+供脚本与回归使用。
+
+## Cloudflare Pages
+
+1. 本仓库 `public/` 为站点根目录（`wrangler.toml` 的 `pages_build_output_dir`）。
+2. 绑定 Git 后每次 push 自动发布；或 `DEPLOY=1 ./scripts/redeploy.sh`。
+3. `functions/` 提供预警代理与天气格点。若未启用 Functions，预警圆点不可用；雨云/温度/风会回退到浏览器直连 Open-Meteo（每批 ≤80 点 GET，避免 URL 过长 414）。
+4. 周更时刻表：跑 `scripts/update_dataset.py`（或 `.github/workflows/update-dataset.yml` 定时任务）再部署。
 
 ## 数据源与已知限制
 
-- 数据：社区 GTFS `wensimehrp/chinese-railway-gtfs`（周更，本版本 2026-09-13，
-  13,891 班/日、5,386 站）。坐标 WGS84（OSM），前端已做 GCJ02 纠偏以对齐高德瓦片。
+- 数据：社区 GTFS `wensimehrp/chinese-railway-gtfs`（周更，顶栏展示当前 release）。
+  坐标 WGS84（OSM），前端已做 GCJ02 纠偏以对齐高德瓦片。
+  卫星底图同样来自高德瓦片（GCJ-02）。
+- 天气图层是模式预报的全国粗网格（约 1.5°）+ 中央气象台预警列表，用于旅行决策扫描，
+  **不是**逐站精确预报；极端个例、对流天气会有漏报/空报。
 - **全部车次按每日开行处理**（feed 的 calendar 即如此声明的近似），个别临客/隔日车
   可能造成班次数轻微偏差；不含限售、停运调整、晚点等运行时因素；**GTFS 无票价与余票
   字段——界面票价为席别费率 × 经由里程的估算值**（非 12306 实价，仅共参考）。

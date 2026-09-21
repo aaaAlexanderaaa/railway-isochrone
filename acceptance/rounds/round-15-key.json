@@ -1,0 +1,18 @@
+{
+ "round": 15,
+ "identity": "探亲转途",
+ "origin": "兰州",
+ "time_setting": "tomorrow",
+ "budget": [
+  null,
+  3
+ ],
+ "pref": "transfer1",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "后天",
+  "time": "12:00"
+ },
+ "question": "我去兰州看朋友，还想顺路再逛一个城市。我打算明天白天出发，不想坐超过3个小时的车，换一次车可以接受，两次就算了。后天12:00之前我必须回到兰州，不能误事。帮我看看有哪些现实可行的选择？"
+}

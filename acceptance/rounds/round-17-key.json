@@ -1,0 +1,18 @@
+{
+ "round": 17,
+ "identity": "第一次来",
+ "origin": "福州",
+ "time_setting": "tomorrow_early",
+ "budget": [
+  3,
+  4
+ ],
+ "pref": null,
+ "constraint": {
+  "type": "onward",
+  "dest": "白云机场",
+  "day": "明天",
+  "time": "12:00"
+ },
+ "question": "我第一次来福州，想顺便再去一个没去过的城市。明天一早我就想走，大概4个小时左右的车程，车次怎么坐都行。明天12:00前我要出现在白云机场。帮我看看有哪些现实可行的选择？"
+}

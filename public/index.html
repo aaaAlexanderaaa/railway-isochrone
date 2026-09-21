@@ -18,19 +18,78 @@
 <div id="main">
   <aside id="side">
     <div class="sec">
-      <label class="lbl" for="origin-input">① 出发地（城市或车站）</label>
+      <label class="lbl" for="origin-input">① 出发地</label>
       <div class="combobox">
-        <input id="origin-input" type="text" placeholder="输入城市名，如：长沙" autocomplete="off">
+        <input id="origin-input" type="text" placeholder="城市或车站，如福州；也可点地图" autocomplete="off">
         <div id="origin-drop" class="drop hidden"></div>
       </div>
-      <p class="hint">建议选择城市（自动包含同城各站）；只选单个车站会漏掉其他站的班次。</p>
       <div id="origin-chosen" class="chosen hidden"></div>
       <div id="origin-stns" class="stnchecks hidden"></div>
     </div>
 
+    <div class="sec dest-sec" id="constraint-box">
+      <label class="lbl" for="dest-input">② 之后必须赶到（可选）</label>
+      <div class="combobox">
+        <input id="dest-input" type="text" placeholder="如白云机场、青岛；填出发地即赶回" autocomplete="off">
+        <div id="dest-drop" class="drop hidden"></div>
+      </div>
+      <div id="dest-chosen" class="chosen hidden"></div>
+      <div id="dest-stns" class="stnchecks hidden"></div>
+      <div class="crow" style="margin-top:8px">
+        <div>
+          <label class="lbl" for="cdate-sel">赶到日期</label>
+          <select id="cdate-sel"></select>
+        </div>
+        <div>
+          <label class="lbl" for="ctime-input">不晚于</label>
+          <input type="time" id="ctime-input" lang="zh-CN" placeholder="21:30" step="300" title="24 小时制，例如 21:30">
+        </div>
+      </div>
+      <label class="chk"><input type="checkbox" id="constr-only"> 只看还能赶到这里的城市</label>
+      <div id="cwarn" class="cwarn hidden"></div>
+      <details id="constraint-more">
+        <summary>更多条件（时长 / 换乘 / 车种）</summary>
+        <div class="crow" style="margin-top:8px">
+          <div>
+            <label class="lbl" for="ctfrom-input">从候选地出发不早于</label>
+            <input type="time" id="ctfrom-input" placeholder="不限" step="300">
+          </div>
+          <div>
+            <label class="lbl" for="cstay-sel">最短在地</label>
+            <select id="cstay-sel">
+              <option value="0">不限</option><option value="60">1h</option><option value="120">2h</option>
+              <option value="180">3h</option><option value="240">4h</option><option value="300">5h</option>
+            </select>
+          </div>
+        </div>
+        <div class="crow">
+          <div>
+            <label class="lbl" for="cdur-sel">赶到该地时长≤</label>
+            <select id="cdur-sel">
+              <option value="0">不限</option><option value="60">1h</option><option value="90">1.5h</option>
+              <option value="120">2h</option><option value="180">3h</option><option value="240">4h</option><option value="360">6h</option>
+            </select>
+          </div>
+          <div>
+            <label class="lbl" for="cxf-sel">赶到该地换乘</label>
+            <select id="cxf-sel">
+              <option value="-1">不限</option><option value="0">直达</option>
+              <option value="1">≤1次</option><option value="2">≤2次</option><option value="3">≤3次</option>
+            </select>
+          </div>
+          <div>
+            <label class="lbl" for="ccls-sel">赶到该地车种</label>
+            <select id="ccls-sel">
+              <option value="all">全部</option><option value="gdc">高铁动车</option><option value="psk">普速</option>
+            </select>
+          </div>
+        </div>
+      </details>
+    </div>
+
     <div class="sec grid2">
       <div>
-        <label class="lbl" for="date-sel">② 出发日期 <span id="today-label" class="mini"></span></label>
+        <label class="lbl" for="date-sel">③ 出发日期 <span id="today-label" class="mini"></span></label>
         <select id="date-sel"></select>
       </div>
       <div>
@@ -51,7 +110,7 @@
     </div>
 
     <div class="sec">
-      <label class="lbl" title="区间用于过滤"太近"的目的地；若你的预算是"不超过X小时"，把下限拉到 0 即可">③ 单程时间预算 <span id="budget-label" class="budget-label">3h00 – 4h00</span></label>
+      <label class="lbl" title="区间用于过滤太近的目的地；若预算是不超过X小时，把下限拉到 0">④ 单程时间预算 <span id="budget-label" class="budget-label">3h00 – 4h00</span></label>
       <input type="range" id="budget-min" min="0" max="600" step="15" value="180">
       <input type="range" id="budget-max" min="0" max="600" step="15" value="240">
       <div class="presets">
@@ -60,6 +119,7 @@
         <button type="button" class="chip" data-budget="0,180">≤3h</button>
         <button type="button" class="chip" data-budget="0,240">≤4h</button>
         <button type="button" class="chip" data-budget="0,300">≤5h</button>
+        <button type="button" class="chip" data-budget="120,180">2–3h</button>
         <button type="button" class="chip" data-budget="180,240">3–4h</button>
         <button type="button" class="chip" data-budget="240,360">4–6h</button>
         <button type="button" class="chip" data-budget="0,600">全部≤10h</button>
@@ -68,12 +128,12 @@
 
     <div class="sec grid2">
       <div>
-        <label class="lbl" for="arrive-by">最晚到达（可选）</label>
+        <label class="lbl" for="arrive-by">去程最晚到站（可选）</label>
         <input type="time" id="arrive-by" step="300">
       </div>
       <div>
         <label class="lbl" for="dwell-note">&nbsp;</label>
-        <p class="hint" style="margin:0">晚于该时刻到达的方案不计入统计（避免"凌晨才到"也被算作可达）。</p>
+        <p class="hint" style="margin:0">今晚这趟车几点前到中间站。后天要赶到某地，填上面第②步。</p>
       </div>
     </div>
 
@@ -95,72 +155,15 @@
         </div>
       </div>
     </div>
-    <p class="hint">换乘、预算、最晚到达为即时过滤；修改日期/时段/车种会自动重新查询。</p>
-
-    <div class="sec">
-      <details id="constraint-box" open>
-        <summary>④ 对端 B（可选，与①③<b>取交集</b>，条件与①③镜像）<span class="sum-hint">"还能在 y 小时内赶到 B"</span></summary>
-        <label class="lbl" for="dest-input">候选地还须能在所选条件下到达</label>
-        <div class="combobox">
-          <input id="dest-input" type="text" placeholder="输入城市名，如：上海" autocomplete="off">
-          <div id="dest-drop" class="drop hidden"></div>
-        </div>
-        <div id="dest-chosen" class="chosen hidden"></div>
-        <div id="dest-stns" class="stnchecks hidden"></div>
-        <div class="crow" style="margin-top:8px">
-          <div>
-            <label class="lbl" for="cdate-sel">到达 B 日期</label>
-            <select id="cdate-sel"></select>
-          </div>
-          <div>
-            <label class="lbl" for="ctime-input">不晚于</label>
-            <input type="time" id="ctime-input" placeholder="当天不限" step="300">
-          </div>
-          <div>
-            <label class="lbl" for="ctfrom-input">出发不早于</label>
-            <input type="time" id="ctfrom-input" placeholder="不限" step="300">
-          </div>
-        </div>
-        <div class="crow">
-          <div>
-            <label class="lbl" for="cdur-sel">到 B 时长≤</label>
-            <select id="cdur-sel">
-              <option value="0">不限</option><option value="60">1h</option><option value="90">1.5h</option>
-              <option value="120">2h</option><option value="180">3h</option><option value="240">4h</option><option value="360">6h</option>
-            </select>
-          </div>
-          <div>
-            <label class="lbl" for="cxf-sel">到 B 换乘</label>
-            <select id="cxf-sel">
-              <option value="-1">不限</option><option value="0">直达</option>
-              <option value="1">≤1次</option><option value="2">≤2次</option><option value="3">≤3次</option>
-            </select>
-          </div>
-          <div>
-            <label class="lbl" for="ccls-sel">到 B 车种</label>
-            <select id="ccls-sel">
-              <option value="all">全部</option><option value="gdc">高铁动车</option><option value="psk">普速</option>
-            </select>
-          </div>
-        </div>
-        <div class="crow">
-          <div>
-            <label class="lbl" for="cstay-sel">最短在地</label>
-            <select id="cstay-sel">
-              <option value="0">不限</option><option value="60">1h</option><option value="120">2h</option>
-              <option value="180">3h</option><option value="240">4h</option><option value="300">5h</option>
-            </select>
-          </div>
-        </div>
-        <div id="cwarn" class="cwarn hidden"></div>
-        <label class="chk" title="勾选/取消立即生效，无需重新点查询"><input type="checkbox" id="constr-only"> 只看同时满足 B 端条件的目的地（立即生效）</label>
-        <p class="hint">逻辑：A 端圈（①③）∩ B 端圈（这里，条件与①③<b>镜像</b>：时长/换乘/车种/出发时段/到达时刻）。B 填出发地即为<b>往返圈</b>——"去 x 小时内、回 y 小时内"完全对称。"不晚于"留空 = 当天任意时刻到达。B 端不受①的出发时段限制，有自己独立的"出发不早于"。</p>
-      </details>
-    </div>
+    <p class="hint">换乘、预算、去程最晚到站为即时过滤；修改日期/时段/车种会自动重新查询。</p>
 
     <div class="sec actions">
       <button id="btn-query" type="button" class="primary">查询可达性</button>
-      <button id="btn-demo" type="button" class="ghost">填入示例场景</button>
+      <div class="actions-extra">
+        <button id="btn-goto-place" type="button" class="ghost">还要赶到某地</button>
+        <button id="btn-return-home" type="button" class="ghost">还要赶回出发地</button>
+        <button id="btn-demo" type="button" class="ghost">填入示例场景</button>
+      </div>
     </div>
     <div id="status" class="status"></div>
 
@@ -172,6 +175,30 @@
 
   <div id="mapwrap">
     <div id="map"></div>
+    <div id="map-layers" class="panel">
+      <div class="legend-title">底图</div>
+      <div class="seg" id="seg-basemap">
+        <label><input type="radio" name="basemap" value="std" checked><span>标准</span></label>
+        <label><input type="radio" name="basemap" value="sat"><span>卫星</span></label>
+      </div>
+      <div class="legend-title" style="margin-top:8px">天气（全国）</div>
+      <div class="seg wrap" id="seg-wx">
+        <label><input type="radio" name="wx" value="off" checked><span>关</span></label>
+        <label><input type="radio" name="wx" value="rain"><span>雨云</span></label>
+        <label><input type="radio" name="wx" value="temp"><span>温度</span></label>
+        <label><input type="radio" name="wx" value="wind"><span>风</span></label>
+        <label><input type="radio" name="wx" value="warn"><span>预警</span></label>
+      </div>
+      <div id="wx-dayrow" class="wx-dayrow hidden">
+        <input type="range" id="wx-day" min="0" max="15" value="0">
+        <div class="wx-day-meta">
+          <span id="wx-day-label">今天</span>
+          <button type="button" id="wx-play" title="按日播放云雨怎么走">▶</button>
+        </div>
+      </div>
+      <div id="wx-legend"></div>
+      <p class="mini" id="wx-src"></p>
+    </div>
     <div id="legend" class="panel hidden">
       <div class="legend-title">着色依据
         <select id="colorby-sel">
@@ -264,13 +291,14 @@
     <h2>铁路可达圈</h2>
     <p class="tagline">回答一个问题：<b>在当前地点、时间和预算下，铁路实际能把我带到哪些地方？</b></p>
     <ol>
-      <li><b>选出发地与出发时段</b> — 支持按城市（自动包含该城市各车站）。</li>
+      <li><b>填出发地</b>，和订票一样。</li>
+      <li><b>若还要赶到某地</b>（如明天 12:00 前到白云机场）— 紧挨出发地的第②步填城市和「不晚于」。要赶回出发地，点「还要赶回出发地」。一个都没有 = 挤不出余量，不是查失败。</li>
       <li><b>设定单程时间预算</b>（如 3–4 小时）— 地图与列表展示该时间带内的现实可达目的地。</li>
-      <li><b>理解每个目的地</b> — 不只看"最快"：<b>典型耗时</b>（与最快班次同档方案的中位数）、<b>主档方案数</b>、<b>直达班次</b>、<b>末班可行出发</b>。最快与典型差距大 = 快车稀少、错过最优的代价高。</li>
-      <li><b>后续行程约束（可选）</b> — 例如"明晚 19:00 前要到上海"：每个候选地会标注从那里出发的最晚可行时间，可直接筛掉不满足约束的选项。</li>
+      <li><b>理解每个目的地</b> — 不只看"最快"：<b>典型耗时</b>、<b>方案数</b>、<b>直达班次</b>。点开一行看具体车次。</li>
       <li>点击地图圆点或列表行查看<u>当日方案时间轴</u>与具体车次行程。</li>
+      <li><b>底图与天气</b> — 可切到卫星影像看山湖地貌；雨云/温度/风是未来十余天的全国预报图层（一眼看哪片在下雨），预警叠中央气象台正在发布的信号。预报求「大部分可靠」，不是点对点气象保证。</li>
     </ol>
-    <p class="mini">数据：中国铁路时刻表（社区 GTFS，2026-09-13 版，每周更新；13,891 班/日、5,386 站）。方案为时刻表演算结果，未含购票限售、临时调度、票价余票等因素。部分车次号带 A/B/C 等后缀（如 C4187B），是同号复开的真实不同班次；斜杠双号（如 G463/G466）是跨线运行中变更车次的同一列车——均非数据重复。</p>
+    <p class="mini">数据：中国铁路时刻表（社区 GTFS，周更快照；班次与站数见顶栏）。方案为时刻表演算结果，未含购票限售、临时调度、票价余票等因素。部分车次号带 A/B/C 等后缀（如 C4187B），是同号复开的真实不同班次；斜杠双号（如 G463/G466）是跨线运行中变更车次的同一列车——均非数据重复。</p>
     <div class="modal-actions">
       <button id="help-demo" type="button" class="ghost">载入示例：长沙 · 3–4h · 明晚到上海</button>
       <button id="help-close" type="button" class="primary">开始使用</button>
@@ -279,6 +307,7 @@
 </div>
 
 <script src="vendor/leaflet/leaflet.js"></script>
+<script src="weather.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
