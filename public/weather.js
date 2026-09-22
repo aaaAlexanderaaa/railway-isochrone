@@ -219,13 +219,36 @@ const Weather = (() => {
       canvas.width = size.x;
       canvas.height = size.y;
       const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!this._liveTiles) this._liveTiles = new Map(); // 活动瓦片登记：切帧原地重绘用
       const run = () => {
         try { this._paint(ctx, coords, size); } catch (e) { /* 空瓦片 */ }
+        this._liveTiles.set(coords.x + ":" + coords.y + ":" + coords.z,
+          { canvas, coords: { x: coords.x, y: coords.y, z: coords.z } });
         done(null, canvas);
       };
       if (typeof requestAnimationFrame === "function") requestAnimationFrame(run);
       else run();
       return canvas;
+    },
+    // 切帧路径：不销毁瓦片，离屏画完整帧后一次性拷贝——Leaflet 的 redraw() 会先拆光
+    // 瓦片再异步重建，播放时用户看到"清空→闪烁→补上"（2026-09-22 用户体感反馈）
+    stepRedraw() {
+      if (!this._liveTiles || !this._liveTiles.size) return;
+      const size = this.getTileSize();
+      if (!this._off) this._off = document.createElement("canvas");
+      if (this._off.width !== size.x || this._off.height !== size.y) {
+        this._off.width = size.x;
+        this._off.height = size.y;
+      }
+      const octx = this._off.getContext("2d", { willReadFrequently: true });
+      for (const [key, rec] of this._liveTiles) {
+        if (!rec.canvas.isConnected) { this._liveTiles.delete(key); continue; }
+        octx.clearRect(0, 0, size.x, size.y); // 上一瓦片的离屏残影不得串到这块瓦片
+        try { this._paint(octx, rec.coords, size); } catch (e) { /* 保持清空 */ }
+        const ctx = rec.canvas.getContext("2d");
+        ctx.clearRect(0, 0, size.x, size.y);
+        ctx.drawImage(this._off, 0, 0);
+      }
     },
     _paint(ctx, coords, size) {
       if (!grid || mode === "off") return;
@@ -899,7 +922,7 @@ const Weather = (() => {
   }
 
   function redraw() {
-    if (layer) layer.redraw();
+    if (layer && layer.stepRedraw) layer.stepRedraw(); // 切帧/换模式：原地重绘，不闪
     if (windLayer && windLayer._reset) windLayer._reset();
     renderAlarms();
     refreshChrome();
