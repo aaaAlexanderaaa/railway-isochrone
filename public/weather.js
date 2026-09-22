@@ -235,19 +235,20 @@ const Weather = (() => {
     stepRedraw() {
       if (!this._liveTiles || !this._liveTiles.size) return;
       const size = this.getTileSize();
-      if (!this._off) this._off = document.createElement("canvas");
-      if (this._off.width !== size.x || this._off.height !== size.y) {
-        this._off.width = size.x;
-        this._off.height = size.y;
+      // 属性名不能用 _off：Leaflet 内部占用该名，addTo 后会被覆盖成非 canvas
+      if (!this._wxOffCanvas) this._wxOffCanvas = document.createElement("canvas");
+      if (this._wxOffCanvas.width !== size.x || this._wxOffCanvas.height !== size.y) {
+        this._wxOffCanvas.width = size.x;
+        this._wxOffCanvas.height = size.y;
       }
-      const octx = this._off.getContext("2d", { willReadFrequently: true });
+      const octx = this._wxOffCanvas.getContext("2d", { willReadFrequently: true });
       for (const [key, rec] of this._liveTiles) {
         if (!rec.canvas.isConnected) { this._liveTiles.delete(key); continue; }
         octx.clearRect(0, 0, size.x, size.y); // 上一瓦片的离屏残影不得串到这块瓦片
         try { this._paint(octx, rec.coords, size); } catch (e) { /* 保持清空 */ }
         const ctx = rec.canvas.getContext("2d");
         ctx.clearRect(0, 0, size.x, size.y);
-        ctx.drawImage(this._off, 0, 0);
+        ctx.drawImage(this._wxOffCanvas, 0, 0);
       }
     },
     _paint(ctx, coords, size) {
@@ -1089,5 +1090,12 @@ const Weather = (() => {
     }
   }
 
-  return { init, setDay, setMode, setBasemap, setGridModel, pointChart, arrivalWx };
+  /* 开机后台预取：格点+预警在页面空闲时拉好，用户首次开图层零等待。
+   * 静默失败——预取是优化不是依赖，失败回落到开图层时的正常加载路径。 */
+  async function prefetch() {
+    try { await ensureGrid(); } catch (e) { /* 开图层时再试 */ }
+    try { await loadAlarms(); } catch (e) { /* 同上 */ }
+  }
+
+  return { init, setDay, setMode, setBasemap, setGridModel, pointChart, arrivalWx, prefetch };
 })();

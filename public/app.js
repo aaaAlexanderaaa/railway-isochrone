@@ -1670,6 +1670,10 @@ async function boot() {
     fillDates(); // 14 天日期选项
     if (typeof Weather !== "undefined") {
       Weather.init({ map, getDay: () => state.dateOff, stations: STATIONS });
+      // 空闲时后台预取天气格点+预警：交互期零即时查询，首开图层零等待
+      const kick = () => { if (Weather.prefetch) Weather.prefetch(); };
+      if (typeof requestIdleCallback === "function") requestIdleCallback(kick, { timeout: 4000 });
+      else setTimeout(kick, 900);
     } else {
       L.tileLayer("https://webrd0{s}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}", {
         subdomains: "1234", attribution: "底图 © 高德地图", maxZoom: 17,
