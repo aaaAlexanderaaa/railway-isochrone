@@ -217,6 +217,37 @@ function refreshLabels() {
 }
 map.on("zoomend", refreshLabels);
 
+// 悬停可点站点时光标变手形：圆点是 canvas 画的没有 DOM hover，用户缺"可点"暗示，
+// 只见 Leaflet 默认抓取手形、点击又常落在圆点外的空白上（2026-09-22 用户反馈）
+let hoverPts = [];
+function rebuildHoverPts() {
+  hoverPts = [];
+  const size = map.getSize();
+  for (let i = 0; i < STATIONS.length; i++) {
+    const s = STATIONS[i];
+    if (!s || !s.d) continue;
+    const [la, lo] = wgs2gcj(s.la, s.lo);
+    const p = map.latLngToContainerPoint([la, lo]);
+    if (p.x > -40 && p.y > -40 && p.x < size.x + 40 && p.y < size.y + 40) hoverPts.push(p);
+  }
+}
+map.on("moveend zoomend resize", rebuildHoverPts);
+let hoverRaf = 0;
+map.on("mousemove", (e) => {
+  const p = { x: e.containerPoint.x, y: e.containerPoint.y };
+  if (hoverRaf) return;
+  hoverRaf = requestAnimationFrame(() => {
+    hoverRaf = 0;
+    let hit = false;
+    for (const q of hoverPts) {
+      const dx = q.x - p.x, dy = q.y - p.y;
+      if (dx * dx + dy * dy < 196) { hit = true; break; } // 14px：贴近圆点实际可点范围（半径+canvas容差），36px 在密集区会满屏手形
+    }
+    const el = map.getContainer();
+    if (el) el.style.cursor = hit ? "pointer" : "";
+  });
+});
+
 function abandonQuery() {
   queryGen++;
   state.queried = false;
@@ -1664,6 +1695,7 @@ async function boot() {
     $("data-badge").textContent = `时刻表 ${dateTxt} · ${Number(META.trips).toLocaleString("zh-CN")} 班/日 · ${Number(META.stations).toLocaleString("zh-CN")} 站`;
     $("data-badge").title = `购票以 12306 为准${META.calendar ? " · " + META.calendar : ""} · ${rel}`;
     buildCityIndex();
+    rebuildHoverPts(); // 站点数据到位，启用悬停手形命中表
     buildGrayLayer();
     refreshLabels();
     initEvents();
