@@ -14,6 +14,7 @@ const Views = (() => {
   let views = [];   // 配置（持久化）
   let results = new Map(); // viewId -> {kind, ok, error?, stats?, latest?, arrAt?, cities:Set, byStop:Map}
   let intersect = null;    // Set<city> 主视图带内 ∩ 各启用视图
+  let nearMiss = [];       // 交集为空时的"最接近"城市（round-27 #2）
 
   /* ---------- 持久化 ---------- */
   function save() {
@@ -99,10 +100,17 @@ const Views = (() => {
     for (const v of views) wrap.appendChild(cardEl(v));
     const iw = document.getElementById("intersect-only-wrap");
     if (iw) iw.style.display = views.length ? "" : "none";
-    // 交集开关文案随视图数变化
+    // 交集开关文案随视图数变化（round-27 #4：两种措辞语义分不清，统一点名主查询参与交集）
     const cb = document.getElementById("intersect-only");
     if (cb && cb.labels && cb.labels[0]) {
-      cb.labels[0].childNodes[0].textContent = views.length > 1 ? " 只看各圈交集城市（地图高亮 + 列表按交集过滤）" : " 只看与主查询的交集城市";
+      const lab = cb.labels[0];
+      const n = views.length;
+      const txt = n === 0 ? ""
+        : n === 1 ? ` 只看「主查询 ∩ 这 1 个圈」的城市（${views[0].dir === "arr" ? "必须赶到 " + views[0].name : "自 " + views[0].name + " 出发"}）`
+        : ` 只看「主查询 ∩ 全部 ${n} 个圈」的城市（地图 ⊕ 白点）`;
+      const tNode = [...lab.childNodes].find((x) => x.nodeType === 3);
+      if (tNode) tNode.textContent = txt;
+      else lab.appendChild(document.createTextNode(txt));
     }
   }
 
@@ -179,10 +187,13 @@ const Views = (() => {
 
     $c("vc-date").onchange = (e) => {
       const d = Number(e.target.value);
-      const patch = { dateOff: d };
+      if (d === v.dateOff) return;
+      const patch = { dateOff: d, fromMin: 6 * 60, untilMin: END_OF_DAY };
       if (d < state.dateOff) patch.dateOff = state.dateOff; // 不早于主查询出发日
+      // 换日期时窗口重置全天（与主表单换日同规则）：圈若继承了主查询的"从现在起"，
+      // 只改日期不改时段会静默丢掉一上午班次（round-27 #8）
       patchView(v.id, patch, { noRerender: true });
-      e.target.value = String(patch.dateOff);
+      $c("vc-from").value = "06:00"; $c("vc-until").value = "23:59";
       if (patch.dateOff !== d) setStatus(`${dirLabel(v)}圈的日期不能早于主查询出发日（${anchorDateStr(state.dateOff)}），已改为该日。`, true);
       if (state.queried) runQuery();
     };
@@ -381,14 +392,54 @@ const Views = (() => {
   }
   function computeIntersect() {
     const act = active();
-    if (!act.length) { intersect = null; return; }
-    let set = mainBandCities();
+    if (!act.length) { intersect = null; nearMiss = []; return; }
+    const mainSet = mainBandCities();
+    let set = mainSet;
     for (const v of act) {
       const r = results.get(v.id);
-      if (!r || !r.ok) { intersect = new Set(); return; } // 有圈没算成 → 交集不可信，按空集处理并靠状态提示
+      if (!r || !r.ok) { intersect = new Set(); nearMiss = []; return; } // 有圈没算成 → 交集不可信，按空集处理并靠状态提示
       set = new Set([...set].filter((c) => r.cities.has(c)));
     }
     intersect = set;
+    // 差距提示基于"主圈带内"全集，而不是过滤后的交集（此时往往已为空）
+    nearMiss = set.size ? [] : computeNearMiss(act, mainSet);
+  }
+
+  // 交集为空时找"最接近"的城市（round-27 #2：用户最需要知道谁卡住了、差多少）：
+  // 主圈带内、恰好只差一个圈、且该圈超预算 ≤90 分钟，按超出量升序取 3 个
+  function computeNearMiss(act, mainSet) {
+    const out = [];
+    for (const c of mainSet) {
+      let fail = null, failN = 0;
+      for (const v of act) {
+        const r = results.get(v.id);
+        if (!r || !r.ok || r.cities.has(c)) continue;
+        failN++;
+        if (!fail) fail = { v, r };
+      }
+      if (failN !== 1 || !fail) continue; // 只报"单圈卡住"的，多圈都差说明差距太大
+      const { v, r } = fail;
+      if (!(v.bmax > 0)) continue; // 该圈不限时长 → 差的是班次/时段，给不出"差多少分钟"
+      let over = null;
+      if (r.kind === "dep") {
+        let bestTyp = null;
+        for (const [stopI, st] of r.stats) {
+          if (STATIONS[stopI].c !== c || st.typ < 30) continue;
+          if (bestTyp == null || st.typ < bestTyp) bestTyp = st.typ;
+        }
+        if (bestTyp != null) over = bestTyp - v.bmax;
+      } else {
+        let bestDur = null;
+        for (const [stopI, info] of r.byStop) {
+          if (STATIONS[stopI].c !== c) continue;
+          if (bestDur == null || info.dur < bestDur) bestDur = info.dur;
+        }
+        if (bestDur != null) over = bestDur - v.bmax;
+      }
+      if (over != null && over > 0 && over <= 90) out.push({ city: c, view: v, over });
+    }
+    out.sort((a, b) => a.over - b.over);
+    return out.slice(0, 3);
   }
 
   // 恰好一个抵达视图 = 旧「必须赶到」单约束形态：镜像回 state.constraint，
@@ -499,6 +550,10 @@ const Views = (() => {
     const act = active();
     if (!act.length) return null;
     const bits = act.map((v) => {
+      // 主查询出发地即该圈出发地：数字与主列重复，只标注来源（round-27 #5）
+      if (state.origin && v.city === state.origin.city && v.dir === "dep") {
+        return `<span class="tag na" title="该圈与主查询同源（${v.name}），耗时见左侧各列">＝主查询</span>`;
+      }
       const r = results.get(v.id);
       if (!r || !r.ok) return `<span class="tag na" title="该圈未算成">${v.name}×</span>`;
       if (!r.cities.has(city)) return `<span class="tag bad" title="该圈不含此城市">✗ ${v.name}</span>`;
@@ -563,18 +618,29 @@ const Views = (() => {
     renderCards();
   }
 
+  // 预算/换乘等即时过滤改变主圈口径后，交集与差距提示必须跟着重算，
+  // 否则停留在上次查询的旧口径（滑杆拖动后列表按旧交集过滤、nearMiss 失效）
+  function recompute() {
+    if (!results.size || !active().length) return;
+    computeIntersect();
+    syncLegacyConstraint();
+    renderOverlay();
+  }
+
   return {
-    load, save, addView, removeView, patchView, renderCards, runAll, clearResults, clearAll,
+    load, save, addView, removeView, patchView, renderCards, runAll, clearResults, clearAll, recompute,
     renderOverlay, active, anyActive, intersectOn, rowCell, detailBlock, summaryText, syncLegacyConstraint,
     debugInfo() {
       const n = (lg) => (lg ? lg.getLayers().length : -1);
       return {
         views: views.length, active: active().length, intersect: intersect ? intersect.size : null,
+        nearMiss: nearMiss.map((m) => ({ city: m.city, view: m.view.name, over: m.over })),
         layerViews: n(layerViews), layerInter: n(layerInter),
         perView: views.map((v) => { const r = results.get(v.id); return { name: v.name, dir: v.dir, ok: !!(r && r.ok), err: r && r.error, cities: r && r.ok ? r.cities.size : null }; }),
       };
     },
     get intersect() { return intersect; },
+    get nearMiss() { return nearMiss; },
     get views() { return views; },
     get results() { return results; },
   };

@@ -670,6 +670,7 @@ async function runQuery() {
     state.journeys = new Map(data.journeys);
     computeStats();
     state.queried = true;
+    state.everQueried = true; // 清除出发地会复位 queried；换源后仍应自动重查（round-27 #1）
 
     // 附加等时圈视图（出发/抵达）逐一取数，随后城市级取交集；
     // 恰好一个抵达视图时 Views 会镜像回 state.constraint/conLabel（旧「必须赶到」链路）
@@ -721,9 +722,13 @@ function syncStatusLine(engineMs) {
   } else if (nCities === 0 && interOn) {
     const nViews = Views.active().length + 1;
     const bad = Views.active().filter((v) => { const r = Views.results.get(v.id); return r && r.error; });
+    const nm = Views.nearMiss || [];
+    const nmBit = nm.length
+      ? `最接近的：${nm.map((m) => `「${m.city}」距 ${m.view.dir === "arr" ? "赶到 " + m.view.name : m.view.name + " 出发"}的圈仅超 ${fmtDur(m.over)}`).join("；")}——跟朋友商量一下这几分钟/小时，可能就解了。`
+      : "";
     setStatus(bad.length
       ? `有 ${bad.length} 个圈没算成（${bad.map((v) => v.name).join("、")}，见卡片状态），交集暂不可信。请修正后重查。${engineBit}`
-      : `主查询与 ${nViews - 1} 个附加圈的交集为空（主圈带内 ${mainBandCities} 城，与各圈无重叠）。可放宽某个圈的预算/时段/换乘，或取消勾选「只看各圈交集城市」。${engineBit}`, true);
+      : `主查询与 ${nViews - 1} 个附加圈的交集为空（主圈带内 ${mainBandCities} 城，与各圈无重叠）。${nmBit}也可放宽某个圈的预算/时段/换乘，或取消勾选「只看交集」。${engineBit}`, true);
   } else if (nStops === 0) {
     setStatus("当前条件下时间预算带内没有可达目的地。可放宽预算/时段，或切换到明天全天。", true);
   } else {
@@ -1436,8 +1441,9 @@ function initEvents() {
     };
     try { localStorage.setItem("railOrigin", JSON.stringify(it)); } catch (e) { } // 与叠加圈一致跨刷新保留
     renderOrigin();
-    renderStationChecks("origin-stns", state.origin, () => { if (state.queried) runQuery(); });
-    if (state.queried) runQuery();
+    renderStationChecks("origin-stns", state.origin, () => { if (state.queried || state.everQueried) runQuery(); });
+    // 清除再重选后 queried 已被复位，但用户显然期待结果跟着换（round-27 #1）
+    if (state.queried || state.everQueried) runQuery();
   });
   // 等时圈视图系统（2026-09-24 改造）：附加圈 UI + 交集开关 + 两个旧入口按钮
   Views.load();
@@ -1479,7 +1485,7 @@ function initEvents() {
   };
   $("intersect-only").onchange = () => {
     if (state.queried) {
-      Views.syncLegacyConstraint && Views.syncLegacyConstraint();
+      Views.recompute();
       renderMapResult(); renderList(); syncStatusLine();
     }
   };
@@ -1520,13 +1526,13 @@ function initEvents() {
     $("budget-label").textContent = a === 0 ? `≤ ${fmtDur(b)}` : `${fmtDur(a)} – ${fmtDur(b)}`;
     syncPresetChips();
   }
-  bmin.oninput = () => { syncBudget(); if (state.queried) { renderMapResult(); renderList(); syncStatusLine(); } };
-  bmax.oninput = () => { syncBudget(); if (state.queried) { renderMapResult(); renderList(); syncStatusLine(); } };
+  bmin.oninput = () => { syncBudget(); if (state.queried) { Views.recompute(); renderMapResult(); renderList(); syncStatusLine(); } };
+  bmax.oninput = () => { syncBudget(); if (state.queried) { Views.recompute(); renderMapResult(); renderList(); syncStatusLine(); } };
   document.querySelectorAll(".chip[data-budget]").forEach((b) => {
     b.onclick = () => {
       const [a, c] = b.dataset.budget.split(",").map(Number);
       bmin.value = a; bmax.value = c; syncBudget();
-      if (state.queried) { renderMapResult(); renderList(); syncStatusLine(); }
+      if (state.queried) { Views.recompute(); renderMapResult(); renderList(); syncStatusLine(); }
     };
   });
   syncBudget(); // 首屏把标签和芯片激活态对齐到默认值（bmin=0 → 显示 ≤ 上限）
@@ -1534,13 +1540,13 @@ function initEvents() {
   document.querySelectorAll('input[name=cls]').forEach((r) => r.onchange = (e) => { state.cls = e.target.value; if (state.queried) runQuery(); });
   document.querySelectorAll('input[name=tra]').forEach((r) => r.onchange = (e) => {
     state.maxTra = Number(e.target.value);
-    if (state.queried) { computeStats(); renderMapResult(); renderList(); syncStatusLine(); if (state.selected != null) selectDestination(state.selected, true); }
+    if (state.queried) { computeStats(); Views.recompute(); renderMapResult(); renderList(); syncStatusLine(); if (state.selected != null) selectDestination(state.selected, true); }
   });
 
   $("arrive-by").onchange = (e) => {
     const v = timeToMin(e.target.value);
     state.arriveBy = v == null ? null : state.dateOff * 1440 + v;
-    if (state.queried) { computeStats(); renderMapResult(); renderList(); syncStatusLine(); if (state.selected != null) selectDestination(state.selected, true); }
+    if (state.queried) { computeStats(); Views.recompute(); renderMapResult(); renderList(); syncStatusLine(); if (state.selected != null) selectDestination(state.selected, true); }
   };
 
   $("colorby-sel").onchange = (e) => { state.colorBy = e.target.value; updateLegend(); if (state.queried) renderMapResult(); };
