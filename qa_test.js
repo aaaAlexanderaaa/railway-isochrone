@@ -30,6 +30,11 @@ const path = require("path");
   await page.waitForTimeout(1500);
   await page.screenshot({ path: "shots/03-demo-result.png" });
 
+  // 表格自 round-20 起默认收起，按需展开（已是展开态则跳过，避免反向收起）
+  const tblHidden = await page.$eval("#list-panel", (el) => el.classList.contains("hidden"));
+  if (tblHidden) await page.click("#btn-table");
+  await page.waitForTimeout(400);
+
   const status = await page.textContent("#status");
   console.log("STATUS:", status);
   const listTitle = await page.textContent("#list-title");

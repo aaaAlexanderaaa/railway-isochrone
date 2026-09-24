@@ -59,6 +59,14 @@ ONWARD_CONSTRAINT = [
     ("{day}{time}前我必须到{dest}（那边有安排，不能迟到）",),
     ("{day}{time}前我要出现在{dest}",),
 ]
+# 多人碰头（2026-09-24 等时圈取交集功能上线后的新画像类型）：
+# 随机的仍是城市/预算/日期/人数，需求形态固定为"求共同可达"——功能覆盖所需
+MEETUP_IDENTITIES = [
+    ("老友聚会", "我们几个老同学想找个城市聚一天：我在{origin}，{friends}。各人能接受的车程不一样，帮我找我们都方便到的城市"),
+    ("跨城同事", "我们小组要找个地方开半天线下会：我在{origin}，同事在{friends}。都想少花点时间在路上"),
+    ("异地恋见面", "我们异地，想找个两头都顺路的城市过周末：我在{origin}，对方在{friends}"),
+    ("网友面基", "游戏里认识的朋友第一次面基，想选个对大家都公平的城市：我在{origin}，他们在{friends}"),
+]
 DAYS = ["明天", "后天", "周日晚"]
 TIMES = ["12:00", "15:00", "17:00", "19:00", "20:00", "21:30"]
 
@@ -107,11 +115,16 @@ def budget_sentence(rng):
     return rng.choice(BUDGET_LOOSE).format(b=b), (b - 1, b)
 
 
-def gen(round_id):
+def gen(round_id, force_meetup=False):
     today = now_cn().date()
     rng = random.Random(f"rail-radius-r{round_id}-{today.isoformat()}")
     cities, big = load_cities()
     origin = rng.choice(cities[:40]) if rng.random() < 0.7 else rng.choice(cities)
+
+    # 15% 概率生成多人碰头画像（或显式 force）；碰头任务没有单人约束段
+    if force_meetup or rng.random() < 0.15:
+        return gen_meetup(round_id, rng, origin, cities, big, today)
+
     ident_key, ident = rng.choice(IDENTITIES)
     t_key, t_tpl = rng.choice(TIME_SETTINGS)
     weekday = WEEKDAY[today.weekday()]
@@ -167,16 +180,75 @@ def gen(round_id):
 3. 产品问题全量清单：任何困惑、要猜的地方、缺失的信息、错误或矛盾的数据、多余的负担——全部列出，不要省略。
 4. 结论：以你的需求衡量，产品是否可用（可用/勉强可用/不可用）。
 """
-    os.makedirs(ROUNDS, exist_ok=True)
-    out = os.path.join(ROUNDS, f"round-{round_id}.md")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(task)
     key = {
         "round": round_id, "identity": ident_key, "origin": origin,
         "time_setting": t_key, "budget": [bmin, bmax], "pref": pref_key,
         "constraint": {"type": con_type, "dest": con_dest, "day": con_day, "time": con_time},
         "question": question,
     }
+    return _emit(round_id, question, key, task)
+
+
+def gen_meetup(round_id, rng, origin, cities, big, today):
+    """多人碰头画像：需求形态固定为"求共同可达"，随机的仍是身份/城市/预算/日期。"""
+    ident_key, ident = rng.choice(MEETUP_IDENTITIES)
+    n_friends = rng.choice([1, 2, 2])
+    pool = [c for c in big if c != origin]
+    friends = rng.sample(pool, n_friends)
+    friends_desc = "、".join(friends[:-1]) + "和" + friends[-1] if len(friends) > 1 else friends[0]
+    budgets = []
+    friend_bits = []
+    for f in friends:
+        b = rng.choice([2, 3, 3, 4, 4, 5])
+        budgets.append(b)
+        friend_bits.append(f"{f}的朋友最多{b}个小时车程")
+    my_b = rng.choice([3, 4, 4, 5])
+    day = rng.choice(["明天", "后天", "周六", "周日"])
+    time_sent = f"我们打算{day}白天见面，" if rng.random() < 0.6 else ""
+    question = (
+        f"{ident.format(city=origin, origin=origin, friends=friends_desc)}。{time_sent}"
+        f"我自己最多想坐{my_b}个小时车，{'，'.join(friend_bits)}。"
+        "帮我们看看哪些城市是大家都方便到的？最好也能看出各自怎么过去。"
+    )
+    key = {
+        "round": round_id, "identity": ident_key + ":meetup", "origin": origin,
+        "friends": friends, "day": day,
+        "budget": [None, my_b], "friend_budgets": budgets,
+        "question": question,
+    }
+    task = f"""# 验收任务书（round-{round_id}）
+
+你是一位真实用户，正在和外地朋友约一次碰头。请只通过下面这个网页产品完成任务。
+
+## 你的真实需求（这就是全部背景，没有其他隐藏信息）
+
+「{question}」
+
+产品地址：http://127.0.0.1:8787 （服务已在运行）
+
+请用图形浏览器直接打开这个地址，像普通人一样点击、输入、阅读页面。不要读源代码、不要调用 /api、不要改任何文件、不要重启服务。
+
+## 规则
+
+1. 只通过产品界面完成任务：禁止调用产品 HTTP API（/api/...）、禁止阅读或修改产品源代码、禁止重启服务、禁止修改任何文件。
+2. 怎么用产品完全由你决定——像真人一样探索。如果一种操作方式不行，换你自己的另一种方式。
+3. 你的目标是做出你们碰头地的决策，不是穷举产品功能。
+
+## 交付报告（中文）
+
+1. 你们的碰头决策：选哪（1–3 个候选 + 取舍理由）？每个人大致怎么过去（出发城市、耗时量级、需不需要换乘）？
+2. 你怎么用产品得出的结论：操作路径 + 哪些信息起了决定性作用。
+3. 产品问题全量清单：任何困惑、要猜的地方、缺失的信息、错误或矛盾的数据、多余的负担——全部列出，不要省略。
+4. 结论：以你们的需求衡量，产品是否可用（可用/勉强可用/不可用）。
+"""
+    return _emit(round_id, question, key, task)
+
+
+def _emit(round_id, question, key, task):
+    os.makedirs(ROUNDS, exist_ok=True)
+    out = os.path.join(ROUNDS, f"round-{round_id}.md")
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(task)
     key_path = os.path.join(ROUNDS, f"round-{round_id}-key.json")
     with open(key_path, "w", encoding="utf-8") as f:
         json.dump(key, f, ensure_ascii=False, indent=1)
@@ -190,6 +262,10 @@ if __name__ == "__main__":
     existing = [f for f in os.listdir(ROUNDS) if f.startswith("round-") and f.endswith("-key.json")] if os.path.isdir(ROUNDS) else []
     nums = [int(f.split("-")[1].split("-")[0]) for f in existing]
     rid = (max(nums) + 1) if nums else 1
-    if len(sys.argv) > 1:
-        rid = int(sys.argv[1])
-    gen(rid)
+    force_meetup = False
+    for a in sys.argv[1:]:
+        if a == "meetup":
+            force_meetup = True
+        else:
+            rid = int(a)
+    gen(rid, force_meetup=force_meetup)

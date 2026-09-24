@@ -27,64 +27,16 @@
       <div id="origin-stns" class="stnchecks hidden"></div>
     </div>
 
-    <div class="sec dest-sec" id="constraint-box">
-      <label class="lbl" for="dest-input">② 之后必须赶到（可选）</label>
-      <div class="combobox">
-        <input id="dest-input" type="text" placeholder="如白云机场、青岛；填出发地即赶回" autocomplete="off">
-        <div id="dest-drop" class="drop hidden"></div>
+    <div class="sec dest-sec" id="views-sec">
+      <label class="lbl" title="每个等时圈=一组取数条件（方向/地点/日期/时段/预算）。两个以上时地图与列表自动取城市交集——不同城市的朋友各建一个圈，就能看到大家都能到达的碰头地">② 叠加等时圈 · 取交集（可选）</label>
+      <p class="mini" style="margin:0 0 6px">再建 1–3 个圈（别的出发地，或「能在时限内<b>抵达</b>某地」的出发源集合），产品自动算出所有圈的<b>城市交集</b>——比如杭州、上海、南京的朋友各设一个圈，看重叠的碰头城市。</p>
+      <div id="views-list"></div>
+      <div class="actions-extra" style="display:flex;gap:6px;flex-wrap:wrap">
+        <button id="btn-add-view" type="button" class="ghost">＋ 增加一个等时圈</button>
+        <button id="btn-goto-place" type="button" class="ghost" title="建一个「抵达圈」：找出能在指定日期/时限内赶到该地的出发源，与主查询取交集">叠加：必须赶到某地</button>
+        <button id="btn-return-home" type="button" class="ghost" title="等价于建一个以出发地为目的地、带「不晚于」时限的抵达圈">叠加：还要赶回出发地</button>
       </div>
-      <div id="dest-chosen" class="chosen hidden"></div>
-      <div id="dest-stns" class="stnchecks hidden"></div>
-      <div class="crow" style="margin-top:8px">
-        <div>
-          <label class="lbl" for="cdate-sel">赶到日期</label>
-          <select id="cdate-sel"></select>
-        </div>
-        <div>
-          <label class="lbl" for="ctime-input">不晚于</label>
-          <input type="time" id="ctime-input" lang="zh-CN" placeholder="21:30" step="300" title="24 小时制，例如 21:30">
-        </div>
-      </div>
-      <label class="chk"><input type="checkbox" id="constr-only"> 只看还能赶到这里的城市</label>
-      <div id="cwarn" class="cwarn hidden"></div>
-      <details id="constraint-more">
-        <summary>赶到行程的更多条件（衔接时长 / 换乘 / 车种——只作用于返程衔接）</summary>
-        <div class="crow" style="margin-top:8px">
-          <div>
-            <label class="lbl" for="ctfrom-input">从候选地出发不早于</label>
-            <input type="time" id="ctfrom-input" placeholder="不限" step="300">
-          </div>
-          <div>
-            <label class="lbl" for="cstay-sel">最短在地</label>
-            <select id="cstay-sel">
-              <option value="0">不限</option><option value="60">1h</option><option value="120">2h</option>
-              <option value="180">3h</option><option value="240">4h</option><option value="300">5h</option>
-            </select>
-          </div>
-        </div>
-        <div class="crow">
-          <div>
-            <label class="lbl" for="cdur-sel">赶到该地时长≤</label>
-            <select id="cdur-sel">
-              <option value="0">不限</option><option value="60">1h</option><option value="90">1.5h</option>
-              <option value="120">2h</option><option value="180">3h</option><option value="240">4h</option><option value="360">6h</option>
-            </select>
-          </div>
-          <div>
-            <label class="lbl" for="cxf-sel">赶到该地换乘</label>
-            <select id="cxf-sel">
-              <option value="-1">不限</option><option value="0">直达</option>
-              <option value="1">≤1次</option><option value="2">≤2次</option><option value="3">≤3次</option>
-            </select>
-          </div>
-          <div>
-            <label class="lbl" for="ccls-sel">赶到该地车种</label>
-            <select id="ccls-sel">
-              <option value="all">全部</option><option value="gdc">高铁动车</option><option value="psk">普速</option>
-            </select>
-          </div>
-        </div>
-      </details>
+      <label class="chk" id="intersect-only-wrap" style="display:none"><input type="checkbox" id="intersect-only" checked> 只看各圈交集城市（地图高亮 + 列表按交集过滤）</label>
     </div>
 
     <div class="sec grid2">
@@ -162,8 +114,6 @@
     <div class="sec actions">
       <button id="btn-query" type="button" class="primary">查询可达性</button>
       <div class="actions-extra">
-        <button id="btn-goto-place" type="button" class="ghost">还要赶到某地</button>
-        <button id="btn-return-home" type="button" class="ghost">还要赶回出发地</button>
         <button id="btn-demo" type="button" class="ghost">填入示例场景</button>
       </div>
     </div>
@@ -273,7 +223,7 @@
             <th title="主档方案（与最快班次同档、耗时≤min(预算上限,最快+2h)）耗时的中位数。该值随「换乘上限」「最晚到达」过滤变化。注意：耗时为同城混合口径——从不同车站出发可能更长，点行看按站拆分的班次。带 ≈ 者典型略低于预算下限（30分钟弹性内）">典型</th>
             <th title="当前条件下当日剩余可选班次（已扣除已发车；按换乘上限/最晚到达过滤）。注意与车站规模「N班/日」区分——后者是该站全部到发车流量">方案</th>
             <th title="主档方案中无需换乘的班次数">直达</th>
-            <th title="从该地出发、仍能在截止时间前到达约束目的地的最晚时刻（同城各站取最大值）。按全部班次计算（含最多2次换乘），不受上方换乘上限过滤；在地时长=最早到达至最晚离开的理想最大值">后续约束</th>
+            <th title="叠加「必须抵达」圈时：从该地出发、仍能在截止时间前赶到圈目的地的最晚时刻（同城各站取最大值）。叠加多个等时圈时：逐圈显示该城市是否在圈内及关键数字。在地时长=最早到达至最晚离开的理想最大值">各圈/约束</th>
           </tr></thead>
           <tbody id="list-body"></tbody>
         </table>
@@ -319,7 +269,7 @@
     <p class="tagline">回答一个问题：<b>在当前地点、时间和预算下，铁路实际能把我带到哪些地方？</b></p>
     <ol>
       <li><b>填出发地</b>，和订票一样。</li>
-      <li><b>若还要赶到某地</b>（如明天 12:00 前到白云机场）— 紧挨出发地的第②步填城市和「不晚于」。要赶回出发地，点「还要赶回出发地」。一个都没有 = 挤不出余量，不是查失败。</li>
+      <li><b>叠加等时圈、取交集</b>——第②步再建 1–3 个圈：别的<b>出发地</b>（不同城市的朋友各建一个），或「<b>必须抵达</b>某地」的圈（如明天 12:00 前到白云机场、或赶回出发地）。查询后自动算出<b>所有圈的共同城市</b>——大家都能到的碰头地。一个都没有 = 没有重叠，不是查失败。</li>
       <li><b>设定单程时间预算</b>（如 3–4 小时）— 地图与列表展示该时间带内的现实可达目的地。</li>
       <li><b>理解每个目的地</b> — 不只看"最快"：<b>典型耗时</b>、<b>方案数</b>、<b>直达班次</b>。点开一行看具体车次。</li>
       <li>点击地图圆点或列表行查看<u>当日方案时间轴</u>与具体车次行程。</li>
@@ -332,7 +282,7 @@
         <b>主档方案</b>：耗时不超过 min(预算上限, 最快+2小时) 的方案；表格里的"方案数 / 直达 / 典型 / P90"均按此口径，更慢或超预算的车不计入（在时间轴上淡色显示）。<br>
         <b>P90 耗时</b>：主档方案耗时的 90 分位——错过最优车次后大约会变成多久。<br>
         <b>≈ 标记</b>：典型耗时略低于预算下限（30 分钟弹性内）；把预算当"上限"理解时它同样符合。<br>
-        <b>后续约束列</b>：从该城市出发、仍能在截止前赶到约束目的地的最晚时刻（同城各站取最大）。
+        <b>后续约束列</b>：叠加了「必须抵达」圈时，显示从该城市出发、仍能在截止前赶到圈目的地的最晚时刻（同城各站取最大）；叠加多个圈时逐圈显示各自情况，⊕ 白点标记 = 各圈交集城市。
       </div>
     </details>
     <p class="mini">数据：中国铁路时刻表（社区 GTFS，周更快照；班次与站数见顶栏）。方案为时刻表演算结果，未含购票限售、临时调度、票价余票等因素。部分车次号带 A/B/C 等后缀（如 C4187B），是同号复开的真实不同班次；斜杠双号（如 G463/G466）是跨线运行中变更车次的同一列车——均非数据重复。</p>
@@ -346,6 +296,7 @@
 <script src="vendor/leaflet/leaflet.js"></script>
 <script src="weather_core.js"></script>
 <script src="weather.js"></script>
+<script src="views.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

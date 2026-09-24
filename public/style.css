@@ -356,3 +356,26 @@ details.midsbox summary { cursor: pointer; color: var(--accent2); font-size: 12p
 .list-head .filters select { width: auto; padding: 2px 4px; font-size: 12px; }
 td.prov { font-size: 12px; color: var(--ink2); }
 td.km { font-size: 12px; color: var(--ink2); font-variant-numeric: tabular-nums; text-align: right; }
+
+/* ===== 等时圈视图卡片（2026-09-24 取交集改造） ===== */
+.view-card { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; background: #fbfdff; }
+.vc-head { display: flex; align-items: center; gap: 6px; }
+.vc-dot { width: 11px; height: 11px; border-radius: 50%; flex: none; box-shadow: 0 0 0 2px #fff, 0 0 0 3.5px rgba(0,0,0,.15); }
+.vc-dir { flex: none; }
+.vc-dir label span { padding: 2px 8px; font-size: 12px; }
+.vc-place { flex: 1; min-width: 0; }
+.vc-place.vc-bad { border-color: var(--bad); }
+.vc-del { border: none; background: none; color: #8a97a5; cursor: pointer; font-size: 14px; padding: 2px 4px; }
+.vc-del:hover { color: var(--bad); }
+.vc-body { margin-top: 6px; }
+.vc-row1, .vc-row2 { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; }
+.vc-f { font-size: 12px; color: var(--ink2); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vc-f select { font-size: 12.5px; }
+.vc-f input[type=time] { width: 88px; font-size: 12.5px; padding: 3px 5px; }
+.vc-foot-check { flex-direction: row; align-items: center; gap: 4px; margin-left: auto; font-size: 12px; color: var(--ink2); cursor: pointer; }
+.vc-status { margin-top: 6px; color: var(--ink2); }
+.vc-drop { top: 100%; left: 0; right: 0; }
+.vrow { padding: 6px 0; border-top: 1px dashed var(--line); line-height: 1.6; }
+.vrow .vc-dot { display: inline-block; margin-right: 4px; vertical-align: -1px; }
+.vrow:first-of-type { border-top: none; }
+.inter-tip { font-size: 12.5px; }
