@@ -382,12 +382,15 @@ const Views = (() => {
 
   // 主视图（当前查询的预算带）城市集 ∩ 各启用视图城市集
   function mainBandCities() {
-    const set = new Set();
+    // 与 cityRows 同口径：城市以带内最优站判定，全市最优 <30 分钟视为通勤距离不算目的地
+    const best = new Map();
     for (const [stopI, st] of state.stats) {
-      if (st.typ < 30) continue;
       if (!(st.typ >= state.bmin - 30 && st.typ <= state.bmax)) continue;
-      set.add(STATIONS[stopI].c);
+      const c = STATIONS[stopI].c;
+      if (!best.has(c) || st.typ < best.get(c)) best.set(c, st.typ);
     }
+    const set = new Set();
+    for (const [c, typ] of best) if (typ >= 30) set.add(c);
     return set;
   }
   function computeIntersect() {

@@ -777,7 +777,6 @@ function cityRows() {
   const byCity = new Map();
   for (const [stopI, st] of state.stats) {
     if (state.origin && STATIONS[stopI].c === state.origin.city) continue;
-    if (st.typ < 30) continue; // 30分钟内的通勤小站不算旅行目的地
     if (!inBandQ(st)) continue;
     if (sizeTh > 0 && STATIONS[stopI].d < sizeTh) continue;
     if (region !== "all" && oa && oa.prov) {
@@ -803,6 +802,9 @@ function cityRows() {
     }
   }
   let rows = Array.from(byCity.values());
+  // "30 分钟通勤距离"按城市级判定：全市最优站 <30 分钟才算太近（round-25 #2）。
+  // 此前站级过滤把无锡站(15分)剔掉、让 68 分的无锡新区当代表，严重误导横向比较
+  rows = rows.filter((r) => r.st.typ >= 30);
   // 城市级约束: 取同城各站"最晚可行出发"的最大值(同城内可乘地铁移动)
   for (const r of rows) {
     const c = STATIONS[r.stopI].c;
@@ -1121,10 +1123,10 @@ function selectDestination(stopI, force) {
       : cityTag.cls === "ok"
         ? `<b>赶到「${dName}」：</b>（同城口径）${cityTag.txt}，${byText}可达 <b>${dName}</b>${state.conArr && state.conArr[stopI] >= 0 ? `<span class="mini">（该班 ${fmtClock(state.conArr[stopI])} 到）</span>` : ""}<span class="mini">（本站 ${s.n}：${tag.txt}）</span><br>
            <span class="mini">（按时刻表${c.cls && c.cls !== "all" ? (c.cls === "gdc" ? "高铁动车" : "普速") : "全部"}班次计算${c.dur > 0 ? `，赶到该地限时 ${fmtDur(c.dur)}` : ""}${c.xf >= 0 ? `，${c.xf === 0 ? "仅直达" : `换乘 ≤${c.xf} 次`}` : ""}，同站换乘已留 15 分钟衔接；提前购票仍建议留余量${c.stops.length > 1 ? `；该地含 ${c.stops.length} 站（${c.stops.slice(0, 4).map((i) => STATIONS[i].n).join("、")}${c.stops.length > 4 ? "…" : ""}），到站≠到家，请留意市内接驳` : ""}）</span><br>
-           <button type="button" class="ghost" id="btn-xleg">查看 ${s.c}（各站）→ ${dName} 的方案</button>`
+           <button type="button" class="ghost" id="btn-xleg">重算并跳到 ${s.c}（各站）→ ${dName} 的方案</button>`
         : `<b>赶到「${dName}」（注意）：</b>（同城口径）${cityTag.txt}——才能${byText}到达 <b>${dName}</b><span class="mini">（本站 ${s.n}：${tag.txt}）</span><br>
            <span class="mini">（按时刻表${c.cls && c.cls !== "all" ? (c.cls === "gdc" ? "高铁动车" : "普速") : "全部"}班次计算${c.dur > 0 ? `，赶到该地限时 ${fmtDur(c.dur)}` : ""}${c.xf >= 0 ? `，${c.xf === 0 ? "仅直达" : `换乘 ≤${c.xf} 次`}` : ""}，同站换乘已留 15 分钟衔接）</span><br>
-           <button type="button" class="ghost" id="btn-xleg">查看 ${s.c}（各站）→ ${dName} 的方案</button>`;
+           <button type="button" class="ghost" id="btn-xleg">重算并跳到 ${s.c}（各站）→ ${dName} 的方案</button>`;
     const b = $("btn-xleg");
     if (b) b.onclick = () => loadXLeg(stopI).then(() => {
       const o = document.getElementById("xleg-out");
@@ -1457,7 +1459,8 @@ function initEvents() {
     }
   };
   $("btn-goto-place").onclick = () => {
-    const v = Views.addView({ dir: "arr", bmax: 0 }); // 不限时长 = 旧「必须赶到」默认口径
+    // 抵达圈默认全天窗口（理由同「赶回出发地」：返程出发时段与主查询出发无关，round-25 #4）
+    const v = Views.addView({ dir: "arr", bmax: 0, fromMin: 6 * 60, untilMin: END_OF_DAY });
     if (v) {
       const inp = document.querySelector(`.view-card[data-id="${v.id}"] .vc-place`);
       if (inp) inp.focus();
@@ -1476,6 +1479,9 @@ function initEvents() {
     const v = Views.addView({
       dir: "arr", name: it.name, stops: it.stops.slice(), city: it.type === "city" ? it.name : STATIONS[it.stops[0]].c,
       dateOff: backOff, bmax: 0, // 不限返程时长 = 旧「赶回出发地」默认口径
+      // 抵达圈的时段是"从候选城市出发"的窗口，与主查询出发时段无关，默认全天；
+      // 照抄主查询会静默截掉下午的返程班次（round-25 #4）
+      fromMin: 6 * 60, untilMin: END_OF_DAY,
     });
     if (!v) return;
     $("intersect-only").checked = true;
