@@ -956,6 +956,14 @@ const Weather = (() => {
       setStatusSafe("");
       redraw();
     } catch (e) {
+      // 加载失败要把模式回滚到 off 并同步单选：否则 radio 显示选中而图层不存在，
+      // 用户再点同一项不会触发 change，体感"天气图层点不出来"（2026-09-22 用户反馈）
+      mode = "off";
+      const offRadio = document.querySelector('input[name="wx"][value="off"]');
+      if (offRadio) offRadio.checked = true;
+      try { localStorage.setItem("railWxMode", "off"); } catch (e2) { /* ignore */ }
+      if (layer && map.hasLayer(layer)) map.removeLayer(layer);
+      if (windLayer && map.hasLayer(windLayer)) map.removeLayer(windLayer);
       setStatusSafe("天气图层暂时不可用：" + (e.message || e), true);
       const src = $("wx-src");
       if (src) src.textContent = "天气网格加载失败：" + (e.message || e);
@@ -1030,6 +1038,9 @@ const Weather = (() => {
     });
     document.querySelectorAll('input[name="wx"]').forEach((el) => {
       el.onchange = () => setMode(el.value);
+      // 重复点击已选中项 = 重新尝试（radio 的 change 只在值变化时触发，
+      // 图层因故障缺失时用户再点同一模式必须有效）
+      el.onclick = () => { if (mode === el.value && el.value !== "off") setMode(el.value); };
     });
     const sl = $("wx-day");
     if (sl) sl.oninput = () => { wxStep = Number(sl.value) || 0; if (mode !== "off") redraw(); else refreshChrome(); };
