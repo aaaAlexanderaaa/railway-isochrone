@@ -52,6 +52,16 @@ async function runActions(page, actions) {
         case "check": await page.check(arg, { timeout: 8000 }); rec.ok = true; break;
         case "shot": { const f = path.join("shots", arg); await page.screenshot({ path: f, fullPage: !!a.full }); rec.file = f; break; }
         case "eval": rec.result = await page.evaluate(arg); break;
+        // mouse: click||x,y / move||x,y / down / up —— 走 Playwright 受信输入，比 eval 派发合成事件更接近真实用户
+        case "mouse": {
+          const [act, xy] = arg.split("||");
+          if (act === "click") { const [x, y] = xy.split(",").map(Number); await page.mouse.click(x, y); }
+          else if (act === "move") { const [x, y] = xy.split(",").map(Number); await page.mouse.move(x, y); }
+          else if (act === "down") await page.mouse.down();
+          else if (act === "up") await page.mouse.up();
+          else throw new Error("未知 mouse 动作: " + act);
+          rec.ok = true; break;
+        }
         case "read": { const r = await page.textContent(arg, { timeout: 8000 }); rec.text = (r || "").replace(/\s+/g, " ").trim().slice(0, a.max || 800); break; }
         case "rows": { const r = await page.$$eval(arg, (els) => els.map((e) => e.textContent.replace(/\s+/g, " ").trim())); rec.count = r.length; rec.rows = r.slice(0, a.max || 30); break; }
         case "exists": rec.count = await page.locator(arg).count(); break;

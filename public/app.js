@@ -121,11 +121,15 @@ function colorCnt(c) { return RAMP[c < 2 ? 0 : c < 5 ? 1 : c < 10 ? 2 : c < 20 ?
 
 const map = L.map("map", { preferCanvas: true, zoomControl: true, minZoom: 4, maxZoom: 17 }).setView(wgs2gcj(34.5, 108.5), 5);
 L.control.scale({ imperial: false }).addTo(map);
+// marker 的 canvas 命中处理器先于 map click 到达（DOM 冒泡顺序）；
+// 记录时间戳，让空白兜底不覆盖已命中的精确选择
+let lastLayerClickTs = 0;
 map.on("click", (e) => {
-  if (state.origin || !originCombo || !STATIONS.length) return;
+  if (!STATIONS.length) return;
   const t = e.originalEvent && e.originalEvent.target;
   if (t && t.closest && t.closest("#map-layers, #legend-wrap, #wx-timeline, #list-panel, .leaflet-control")) return;
-  let best = -1, bestD = 36;
+  if (Date.now() - lastLayerClickTs < 80) return;
+  let best = -1, bestD = state.origin ? 26 : 36;
   const p = e.containerPoint;
   for (let i = 0; i < STATIONS.length; i++) {
     const s = STATIONS[i];
@@ -134,7 +138,11 @@ map.on("click", (e) => {
     const d = p.distanceTo(map.latLngToContainerPoint([la, lo]));
     if (d < bestD) { bestD = d; best = i; }
   }
-  if (best >= 0) onStationClick(best);
+  if (best < 0) return;
+  if (!state.origin && originCombo) { onStationClick(best); return; }
+  // 查询后点在圆点附近但没命中 canvas 容差（有效半径仅半径+10.8px，视觉上"点在点上"
+  // 常落在死区，2026-09-23/24 用户连续反馈"点不动"）：按最近站给出反馈而非无响应
+  if (state.queried) onStationClick(best);
 });
 
 const sharedRenderer = L.canvas({ padding: 0.5, tolerance: 10 }); // 灰点半径很小，扩大点击容差
@@ -161,7 +169,7 @@ function buildGrayLayer() {
     const s = STATIONS[i];
     const m = mkMarker(s, 3.2, "#9aa7b4", 0.55, 0);
     m.bindTooltip(`${s.n}`, { className: "stn-tip", direction: "top" });
-    m.on("click", () => onStationClick(i));
+    m.on("click", () => { lastLayerClickTs = Date.now(); onStationClick(i); });
     layerGray.addLayer(m);
   }
 }
@@ -284,7 +292,7 @@ function renderMapResult() {
       m = mkMarker(s, r, color, 0.95, isLight ? 1.6 : 1.1, isLight ? "#3d4a56" : "#2b2b2b");
     }
     m.bindTooltip(() => tipText(stopI), { className: "stn-tip", direction: "top" });
-    m.on("click", () => onStationClick(stopI));
+    m.on("click", () => { lastLayerClickTs = Date.now(); onStationClick(stopI); });
     (inBand ? layerBand : layerNear).addLayer(m);
     if (inBand) marks.push(m);
   }
@@ -804,9 +812,11 @@ function cityRows() {
   for (const r of rows) {
     const c = STATIONS[r.stopI].c;
     r.conMax = -1; r.conStop = null; r.firstArr = null;
+    r.cityBestTyp = null; r.cityBestStop = null; // 同城各站典型耗时最优（round-24 #3：主档站口径会掩盖同城快站）
     for (const [stopI, st2] of state.stats) {
       if (STATIONS[stopI].c !== c) continue; // 同城全部可达站(不限带内), 与详情口径一致
       if (r.firstArr == null || st2.firstArr < r.firstArr) r.firstArr = st2.firstArr;
+      if (st2.typ >= 30 && (r.cityBestTyp == null || st2.typ < r.cityBestTyp)) { r.cityBestTyp = st2.typ; r.cityBestStop = stopI; }
       const v = state.conLabel ? state.conLabel[stopI] : -1;
       if (v != null && v > r.conMax) { r.conMax = v; r.conStop = stopI; r.conArr = state.conArr ? state.conArr[stopI] : null; }
     }
@@ -909,8 +919,11 @@ function rowHtml(r, conOn, faster) {
   const s = STATIONS[r.stopI], st = r.st;
   const tag = conOn ? conTagByMax(r.conMax, r.conMax >= 0 && r.firstArr != null ? r.conMax - r.firstArr : null) : null;
   const tip = faster ? ` title="典型耗时低于预算下限；若预算按上限理解，它也是符合预算的选择"` : "";
+  // 代表站明显慢于同城最优时点名快站（round-24 #3），只看表格也能拿到详情里"同城车站"的关键信息
+  const cityBest = r.cityBestTyp != null && r.cityBestTyp < st.typ - 15
+    ? `<br><span class="st" title="同城各可达站里典型耗时最优的车站（该站口径，点击本行在详情里可切换）">同城更快：${STATIONS[r.cityBestStop].n} 典型 ${fmtDur(r.cityBestTyp)}</span>` : "";
   return `<tr data-stop="${r.stopI}"${faster ? ` class="faster"` : ""}>
-      <td><b>${s.c}</b><br><span class="st">${s.n} · ${s.d}班/日${st.dir ? "" : "（无直达）"}</span></td>
+      <td><b>${s.c}</b><br><span class="st">${s.n} · ${s.d}班/日${st.dir ? "" : "（无直达）"}</span>${cityBest}</td>
       <td class="prov">${s.p || ""}</td>
       <td class="km">${r.km != null ? r.km + "km" : ""}</td>
       <td class="num">${fmtDur(st.fast)}</td>
