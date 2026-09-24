@@ -14,6 +14,20 @@ def hhmmss_to_min(s):
     h, m, sec = s.split(":")
     return int(h) * 60 + int(m)  # 秒级忽略（数据里基本为 00）
 
+def haversine_km(la1, lo1, la2, lo2):
+    import math
+    r = 6371.0
+    p1, p2 = math.radians(la1), math.radians(la2)
+    dp = p2 - p1
+    dl = math.radians(lo2 - lo1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+# 物理速度守卫：相邻停站直线速度超过该值（km/h）即认为该车次时刻/停站数据损坏，
+# 整趟丢弃。2026-09-24 round-26 验收发现 Y481/Y484（沈阳北 07:59→邯郸 09:45，
+# 750km/106min）等旅游列车上游数据损坏，把物理不可能的"1h46 直达"灌进可达圈。
+MAX_SEG_KMH = 400.0
+
 # ---------- stops ----------
 stations = []           # [name, lat, lon]
 sid2idx = {}
@@ -64,6 +78,8 @@ t_stops, t_dep, t_arr, t_dist = [], [], [], []
 degree = [0] * len(stations)
 monotonic_violations = 0
 kept = 0
+speed_trips_dropped = []   # (车次, 前站, 后站, km, dt分钟)
+dropped_trip_ids = set()
 for i, name in enumerate(trip_names):
     rows = per_trip.get(f"{name}")  # 注意: trip_id 与 trip_short_name 基本一致，但有例外
     # 用索引对齐更稳妥：trip_names 顺序来自 trips.txt，而 per_trip 键是 trip_id。
@@ -81,6 +97,22 @@ assert len(trip_ids) == len(trip_names)
 for i, tid in enumerate(trip_ids):
     rows = sorted(per_trip.get(tid, []))
     if len(rows) < 2:
+        continue
+    # 物理速度守卫：任一相邻段超速 -> 整趟丢弃（数据损坏，宁可少一班不可错一班）
+    bad_speed = False
+    for k in range(1, len(rows)):
+        a_name, a_la, a_lo = stations[rows[k - 1][1]]
+        b_name, b_la, b_lo = stations[rows[k][1]]
+        dt = rows[k][2] - rows[k - 1][3]  # 本站到达 - 前站出发
+        if dt <= 0:
+            continue  # 同站/零间隔交给单调性统计，不在此误杀
+        km = haversine_km(a_la, a_lo, b_la, b_lo)
+        if km / (dt / 60.0) > MAX_SEG_KMH:
+            speed_trips_dropped.append((trip_names[i], a_name, b_name, round(km, 1), dt))
+            bad_speed = True
+            break
+    if bad_speed:
+        dropped_trip_ids.add(tid)
         continue
     seq = [r[1] for r in rows]
     deps = [r[3] for r in rows]
@@ -106,6 +138,12 @@ for i, tid in enumerate(trip_ids):
         degree[s] += 1
 
 print(f"real trips with stop_times: {len(off)-1}, stop_times rows: {len(t_stops)}, monotonic violations: {monotonic_violations}")
+if speed_trips_dropped:
+    print(f"speed-guard dropped {len(speed_trips_dropped)} trips (> {MAX_SEG_KMH}km/h):")
+    for t in speed_trips_dropped[:10]:
+        print(f"  {t[0]}: {t[1]} -> {t[2]} {t[3]}km/{t[4]}min")
+    if len(speed_trips_dropped) > 10:
+        print(f"  … 共 {len(speed_trips_dropped)} 趟")
 
 # ---------- 城市分组 ----------
 SUFFIX = ("东", "南", "西", "北")

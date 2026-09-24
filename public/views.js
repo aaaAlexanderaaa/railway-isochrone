@@ -50,10 +50,16 @@ const Views = (() => {
 
   function addView(preset) {
     if (views.length >= MAX_VIEWS) { setStatus(`最多叠加 ${MAX_VIEWS} 个圈（够 4 个朋友各建一个了）`, true); return null; }
+    // 新圈默认对齐主查询的日期/时段：多圈求交集时各圈口径一致，主客互换结果可复现
+    // （round-26 #1/#2：默认值若漂到别的日期/时段，交集会随视角变化且无提示）。
+    // 注意 dateOff=0（今天）是合法值，不能用 `state.dateOff || 1` 这类 falsy 写法
+    const st = (typeof state !== "undefined") ? state : { dateOff: 1, fromMin: 360, untilMin: END_OF_DAY };
     const v = Object.assign({
       id: nextId++, dir: "dep", name: null, stops: [], city: null,
-      dateOff: (typeof state !== "undefined" && state.dateOff) || 1,
-      fromMin: 6 * 60, untilMin: END_OF_DAY, bmax: 240,
+      dateOff: st.dateOff != null ? st.dateOff : 1,
+      fromMin: st.fromMin != null ? st.fromMin : 6 * 60,
+      untilMin: st.untilMin != null ? st.untilMin : END_OF_DAY,
+      bmax: 240,
       cls: "all", maxTra: 2, arrBy: null,
       color: COLORS[(nextId - 2) % COLORS.length], visible: true,
     }, preset || {});
@@ -157,12 +163,16 @@ const Views = (() => {
 
     // 地点：复用主输入的搜索逻辑（城市索引 + 车站），但挂在卡片输入框上
     const placeInput = $c("vc-place");
+    if (v.name) placeInput.classList.add("vc-picked");
+    placeInput.title = v.name ? `已绑定：${v.dir === "arr" ? "必须抵达" : "出发地"} ${v.name}（${v.stops.length} 站）。可重新输入替换。` : "输入城市或车站名";
     attachPlaceSearch(placeInput, (it) => {
       patchView(v.id, {
         name: it.name, stops: it.stops.slice(),
         city: it.type === "city" ? it.name : STATIONS[it.stops[0]].c,
       }, { noRerender: true });
       placeInput.classList.remove("vc-bad");
+      placeInput.classList.add("vc-picked");
+      placeInput.title = `已绑定：${dirLabel(v)}（${it.stops.length} 站）`;
       if (state.queried) runQuery();
       else setStatus(`已建好「${dirLabel(v)}${it.name}」圈。${views.length > 1 ? "多个圈会在查询后自动取交集。" : ""}调整日期/时段/预算后点「查询可达性」。`);
     });
@@ -229,7 +239,7 @@ const Views = (() => {
     function pick(i) {
       const it = items[i];
       drop.classList.add("hidden");
-      if (it) { input.value = it.name; onPick(it); }
+      if (it) { input.value = it.name; input.dataset.bound = it.name; onPick(it); }
     }
     function search(q) {
       q = (q || "").trim();
@@ -245,6 +255,7 @@ const Views = (() => {
       renderList();
     }
     input.addEventListener("input", () => {
+      delete input.dataset.bound; // 重新编辑时解除防重复绑定
       clearTimeout(timer);
       timer = setTimeout(() => search(input.value), 150);
     });
@@ -259,7 +270,19 @@ const Views = (() => {
       [...drop.children].forEach((el2, i) => el2.classList.toggle("active", i === active));
       e.preventDefault();
     });
-    input.addEventListener("blur", () => setTimeout(() => { if (drop) drop.classList.add("hidden"); }, 160));
+    input.addEventListener("blur", () => {
+      setTimeout(() => {
+        if (drop) drop.classList.add("hidden");
+        // 失焦自动绑定：输入恰为某城市/车站名时直接生效（与主表单同规则，
+        // round-26 #4：选完无反馈、输入被静默吸收，用户以为选择丢失）
+        const q = input.value.trim();
+        if (!q || input.dataset.bound === q) return;
+        const city = cityIndex.find((c) => c.name === q);
+        const stn = !city ? STATIONS.map((s, i) => ({ i, ...s })).find((s) => s.n === q && s.d > 0) : null;
+        if (city) { input.dataset.bound = city.name; onPick({ type: "city", name: city.name, stops: city.stops.slice(), degree: city.degree }); }
+        else if (stn) { input.dataset.bound = stn.n; onPick({ type: "stn", name: stn.n, stops: [stn.i], degree: stn.d }); }
+      }, 160);
+    });
   }
 
   /* ---------- 查询 ---------- */
