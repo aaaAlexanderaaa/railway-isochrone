@@ -1,0 +1,18 @@
+{
+ "round": 25,
+ "identity": "数字游民",
+ "origin": "苏州",
+ "time_setting": "tomorrow_early",
+ "budget": [
+  null,
+  6
+ ],
+ "pref": "freq",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "明天",
+  "time": "19:00"
+ },
+ "question": "我远程办公，最近住在苏州，想换个城市待一两天。明天一早我就想走，最多6个小时车程，再久受不了，希望班次多一点，时间上灵活些，错过一趟不至于完蛋。我明天19:00前得赶回苏州。帮我看看有哪些现实可行的选择？"
+}

@@ -193,7 +193,9 @@ def gen_meetup(round_id, rng, origin, cities, big, today):
     """多人碰头画像：需求形态固定为"求共同可达"，随机的仍是身份/城市/预算/日期。"""
     ident_key, ident = rng.choice(MEETUP_IDENTITIES)
     n_friends = rng.choice([1, 2, 2])
-    pool = [c for c in big if c != origin]
+    # 朋友出发地用班次 top40 大城市池（数据集 c 字段有“白云机场/广州新塘”这类伪城市，
+    # 当目的地合理、当居住地不真实）；机场类同样排除
+    pool = [c for c in cities[:40] if c != origin and "机场" not in c]
     friends = rng.sample(pool, n_friends)
     friends_desc = "、".join(friends[:-1]) + "和" + friends[-1] if len(friends) > 1 else friends[0]
     budgets = []
