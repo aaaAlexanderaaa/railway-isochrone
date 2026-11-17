@@ -1,25 +1,15 @@
 #!/usr/bin/env bash
-# 数据集更新 +（可选）Cloudflare Pages 部署
-#   ./scripts/redeploy.sh              # 只更新数据集
-#   DEPLOY=1 ./scripts/redeploy.sh     # 更新后 wrangler pages deploy
-#   ./scripts/redeploy.sh --tag gtfs-20260913-040340
+# Role: 更新数据，并按 DEPLOY=1 运行经过测试的 Cloudflare 发布。
+# 契约：docs/specs/delivery.md；凭据由环境提供。
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-cd "$ROOT"
-
-python3 "$ROOT/scripts/update_dataset.py" "$@"
-
+RAIL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+cd "$RAIL_ROOT"
+python3 scripts/update_dataset.py --skip-submodule "$@"
 if [[ "${DEPLOY:-0}" == "1" ]]; then
-  if ! command -v wrangler >/dev/null 2>&1 && ! command -v npx >/dev/null 2>&1; then
-    echo "[redeploy] 未找到 wrangler/npx，跳过 Cloudflare 部署" >&2
-    exit 1
-  fi
-  echo "[redeploy] Cloudflare Pages deploy (output=public/)"
-  if command -v wrangler >/dev/null 2>&1; then
-    wrangler pages deploy "$ROOT/public" --project-name "${CF_PAGES_PROJECT:-railway-map}"
-  else
-    npx wrangler pages deploy "$ROOT/public" --project-name "${CF_PAGES_PROJECT:-railway-map}"
-  fi
+  npm ci
+  npm test
+  npm run build
+  npm run pages:build
+  npm run test:browser
+  npx --no-install wrangler pages deploy public --project-name "${CF_PAGES_PROJECT:-railway-map}" --branch main
 fi
-
-echo "[redeploy] 完成。本地预览: node server.js  → http://127.0.0.1:8787"

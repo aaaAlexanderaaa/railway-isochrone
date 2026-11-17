@@ -1,7 +1,7 @@
 // 引擎快速校验: 已知城市对耗时 + 性能
 "use strict";
 const { Engine } = require("./lib/engine");
-const e = new Engine("public/data/net.json");
+const e = new Engine(process.env.NET_PATH || "public/data/net.json");
 
 const idx = (n) => e.stIdxByName.get(n);
 function assert(cond, msg) { if (!cond) { console.error("FAIL:", msg); process.exit(1); } }
@@ -9,9 +9,9 @@ console.log("\n=== 正向可达: 长沙南, 今天 08:00-22:00, 全部车种 ===
 const r = e.reach([idx("长沙南")], 8 * 60, 22 * 60, "all");
 console.log("stats:", e.lastStats);
 
-function statsFor(name) {
+function statsFor(name, result = r) {
   const s = idx(name);
-  const js = r.journeys.get(s) || [];
+  const js = result.journeys.get(s) || [];
   if (!js.length) return `${name}: 不可达?`;
   const durs = js.map(x => x[1] - x[0]).sort((a, b) => a - b);
   const med = durs[Math.floor(durs.length / 2)];
@@ -20,6 +20,18 @@ function statsFor(name) {
 }
 for (const n of ["上海虹桥", "武汉", "广州南", "北京西", "杭州东", "贵阳北", "南京南", "郑州东", "南昌西", "厦门北", "宜昌东", "桂林西"]) {
   console.log(statsFor(n));
+}
+
+// 现实线路保留宽容范围，运行图正常变化不要求固定班次数。
+for (const [name, min, max] of [["上海虹桥",180,330],["广州南",90,180],["贵阳北",150,270]]) {
+  const journeys = r.journeys.get(idx(name)) || [];
+  assert(journeys.some(j => j[2] === 1), name + " 应有直达");
+  const fastest = Math.min(...journeys.map(j => j[1] - j[0]));
+  assert(fastest >= min && fastest <= max, name + " 最快耗时超出现实区间: " + fastest);
+}
+for (const journeys of r.journeys.values()) for (const j of journeys) {
+  assert(j[0] >= 480 && j[0] <= 1320, "首程出发越过查询窗口");
+  assert(j[1] > j[0] && j[2] >= 1 && j[2] <= 3, "方案时间或换乘数无效");
 }
 
 console.log("\n=== 城市起点: 长沙(长沙南+长沙), 08:00-22:00 ===");
@@ -55,7 +67,7 @@ for (const d of e.departures(idx("长沙南"), 8 * 60, 6, "all")) {
 console.log("\n=== 高铁动车过滤: 长沙南 08:00-22:00 ===");
 const r3 = e.reach([idx("长沙南")], 8 * 60, 22 * 60, "gdc");
 console.log("stats:", e.lastStats);
-console.log(statsFor("上海虹桥"));
+console.log(statsFor("上海虹桥", r3));
 
 console.log("\n=== 远期日守护: 第 4/7/13 天 长沙(城市) 08:00-22:00 gdc ===");
 // 天偏移编码曾只有 2 位, dateOff>=4 溢出进车次号 -> 无班次/张冠李戴(2026-09-20 修复)

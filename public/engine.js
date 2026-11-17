@@ -65,16 +65,17 @@ class Engine {
   // 曾因按旧的两日容量分配导致约束扫描只看到前 ~15k 条连接(往返检查全假阴性)。
   _buildConnections() {
     const DAYS = 14;
-    const n = this.tstops.length - this.nTrips; // 连接数 = 总停站行 - 车次数
-    const cArr = new Int32Array(n * DAYS), cDep = new Int32Array(n * DAYS);
-    const cTrip = new Int32Array(n * DAYS), cFrom = new Int32Array(n * DAYS);
-    const cTo = new Int32Array(n * DAYS);
+    const pastDays = Math.ceil(Math.max(...this.tripLastDep) / 1440);
+    const n = (this.tstops.length - this.nTrips) * (DAYS + pastDays);
+    const cArr = new Int32Array(n), cDep = new Int32Array(n);
+    const cTrip = new Int32Array(n), cFrom = new Int32Array(n);
+    const cTo = new Int32Array(n), cInstance = new Int32Array(n);
     let ci = 0;
     for (let t = 0; t < this.nTrips; t++) {
       for (let k = this.off[t]; k < this.off[t + 1] - 1; k++) {
         const a = this.arr[k + 1], dp = this.dep[k];
-        for (let o = 0; o <= (DAYS - 1) * 1440; o += 1440) {
-          cArr[ci] = a + o; cDep[ci] = dp + o; cTrip[ci] = t; cFrom[ci] = this.tstops[k]; cTo[ci] = this.tstops[k + 1]; ci++;
+        for (let o = -pastDays * 1440; o <= (DAYS - 1) * 1440; o += 1440) {
+          cArr[ci] = a + o; cDep[ci] = dp + o; cTrip[ci] = t; cFrom[ci] = this.tstops[k]; cTo[ci] = this.tstops[k + 1]; cInstance[ci] = t * (DAYS + pastDays) + o / 1440 + pastDays; ci++;
         }
       }
     }
@@ -82,6 +83,7 @@ class Engine {
     for (let i = 0; i < ci; i++) idx[i] = i;
     const sorted = Array.from(idx).sort((x, y) => cArr[y] - cArr[x]);
     this.connIdx = Int32Array.from(sorted);
+    this.cInstance = cInstance; this.instanceCount = this.nTrips * (DAYS + pastDays);
     this.cArr = cArr; this.cDep = cDep; this.cTrip = cTrip; this.cFrom = cFrom; this.cTo = cTo;
   }
 
@@ -93,17 +95,41 @@ class Engine {
     return true;
   }
 
-  _activeInstances(tFrom, tTo, classFilter) {
-    const act = [];
-    for (let t = 0; t < this.nTrips; t++) {
-      if (!this._classOk(t, classFilter)) continue;
-      const fd = this.tripFirstDep[t], ld = this.tripLastDep[t];
-      // 日期实例覆盖查询窗所在的所有自然日(相对查询基准日)
-      for (let o = Math.floor(tFrom / 1440) * 1440; o <= tTo; o += 1440) {
-        if (ld + o >= tFrom && fd + o <= tTo) act.push((t << 4) | (o / 1440));
+  // 每日运行图直接计算最早可乘实例；不把首程出发窗口施加给换乘车。
+  // 负偏移表示昨天/更早始发、今天途中上车的列车。
+  _scanForward(origins, tFrom, tTo, classFilter, sampleT, layers = K_MAX) {
+    const tau = [], parTrip = [], parBoard = [], parOff = [];
+    for (let j = 0; j <= layers; j++) {
+      tau.push(new Int32Array(this.nStops).fill(INF));
+      parTrip.push(new Int32Array(this.nStops).fill(-1));
+      parBoard.push(new Int32Array(this.nStops).fill(-1));
+      parOff.push(new Int32Array(this.nStops));
+    }
+    const originSet = new Set(origins);
+    for (const s of origins) tau[0][s] = sampleT;
+    for (let j = 1; j <= layers; j++) {
+      tau[j].set(tau[j - 1]);
+      for (let ti = 0; ti < this.nTrips; ti++) {
+        if (!this._classOk(ti, classFilter)) continue;
+        let board = -1, offset = INF;
+        for (let k = this.off[ti]; k < this.off[ti + 1]; k++) {
+          const station = this.tstops[k];
+          if (board >= 0) {
+            const arrival = this.arr[k] + offset;
+            if (arrival < tau[j][station]) {
+              tau[j][station] = arrival;
+              parTrip[j][station] = ti; parBoard[j][station] = board; parOff[j][station] = offset;
+            }
+          }
+          if (tau[j - 1][station] >= INF || k === this.off[ti + 1] - 1 || (j > 1 && originSet.has(station))) continue;
+          const ready = tau[j - 1][station] + (j === 1 ? 0 : XFER_MIN);
+          const instance = Math.ceil((ready - this.dep[k]) / 1440) * 1440;
+          if (j === 1 && this.dep[k] + instance > tTo) continue;
+          if (instance < offset) { offset = instance; board = k; }
+        }
       }
     }
-    return act;
+    return {tau, parTrip, parBoard, parOff};
   }
 
   // 出发站集合当日在 [tFrom,tTo] 的出发时刻(采样点)
@@ -115,7 +141,7 @@ class Engine {
         if (!this._classOk(t, classFilter)) continue;
         for (let k = this.off[t]; k < this.off[t + 1] - 1; k++) { // 末站不可上车
           if (this.tstops[k] === s) {
-            for (let o = Math.floor(tFrom / 1440) * 1440; o <= tTo; o += 1440) {
+            for (let o = Math.ceil((tFrom - this.dep[k]) / 1440) * 1440; this.dep[k] + o <= tTo; o += 1440) {
               const d = this.dep[k] + o;
               if (d >= tFrom && d <= tTo) set.add(d);
             }
@@ -139,61 +165,28 @@ class Engine {
   // 返回: { samples, journeys: Map<stopIdx, Array<[dep, arr, tripsUsed, firstTrip, sampleT, originStop]>> }
   reach(origins, tFrom, tTo, classFilter) {
     const t0 = Date.now();
-    const act = this._activeInstances(tFrom, tTo, classFilter);
     const samples = this._originSamples(origins, tFrom, tTo, classFilter);
     const nS = this.nStops;
-    const tau = [], parTrip = [], parBoard = [], parOff = [];
-    for (let j = 0; j <= K_MAX; j++) {
-      tau.push(new Int32Array(nS).fill(INF));
-      parTrip.push(new Int32Array(nS).fill(-1));
-      parBoard.push(new Int32Array(nS).fill(-1));
-      parOff.push(new Int32Array(nS));
-    }
     const journeys = new Map(); // stop -> Map<key, tuple>
     const oset = new Set(origins);
 
     for (const t of samples) {
-      for (let j = 0; j <= K_MAX; j++) tau[j].fill(INF);
-      for (const s of origins) tau[0][s] = t;
-
-      for (let j = 1; j <= K_MAX; j++) {
-        tau[j].set(tau[j - 1]);
-        let improved = false;
-        for (const code of act) {
-          const ti = code >> 4, o = (code & 15) * 1440;
-          const buf = j === 1 ? 0 : XFER_MIN; // 首程进站不算换乘; 后续需换乘缓冲
-          let boardK = -1;
-          for (let k = this.off[ti]; k < this.off[ti + 1]; k++) {
-            const s = this.tstops[k];
-            if (boardK < 0) {
-              if (tau[j - 1][s] + buf <= this.dep[k] + o) boardK = k;
-              else continue;
-            }
-            if (k === boardK) continue; // 登车站本身不作为"乘坐后到达"松弛
-            const ar = this.arr[k] + o;
-            if (ar < tau[j][s]) {
-              tau[j][s] = ar; parTrip[j][s] = ti; parBoard[j][s] = boardK; parOff[j][s] = o;
-              improved = true;
-            }
-          }
-        }
-        if (!improved) break;
-      }
+      const {tau, parTrip, parBoard, parOff} = this._scanForward(origins, tFrom, tTo, classFilter, t);
 
       // 收集本采样点各站最优方案
       for (let s = 0; s < nS; s++) {
         if (oset.has(s)) continue;
-        const best = tau[K_MAX][s];
-        if (best >= INF) continue;
-        let j = 0;
-        while (tau[j][s] > best) j++;
-        if (j === 0) continue; // 仅起点自身
+        // 每个乘车层都保留：更慢但少换乘的方案也是非支配方案。
+        for (let j = 1; j <= K_MAX; j++) {
+        const best = tau[j][s];
+        if (best >= INF || best >= tau[j - 1][s]) continue;
         // 回溯(向后走, 最后记录的一段即首程); 跳过未被该层更新的空层
         let cur = s, jj = j;
         let firstTrip = -1, originStop = -1, depO = -1, legsUsed = 0;
         let guard = 0;
         while (jj > 0 && guard++ < 8) {
-          const ti = parTrip[jj][cur], b = parBoard[jj][cur];
+          if (tau[jj][cur] === tau[jj - 1][cur]) { jj--; continue; }
+      const ti = parTrip[jj][cur], b = parBoard[jj][cur];
           if (ti < 0 || b < 0) { jj--; continue; }
           firstTrip = ti;
           originStop = this.tstops[b];
@@ -207,6 +200,7 @@ class Engine {
         let m = journeys.get(s);
         if (!m) { m = new Map(); journeys.set(s, m); }
         if (!m.has(key)) m.set(key, [depO, best, legsUsed, firstTrip, t, originStop]);
+        }
       }
     }
 
@@ -221,40 +215,13 @@ class Engine {
 
   // ---- 单方案行程重构 ----
   itinerary(origins, tFrom, tTo, classFilter, sampleT, targetStop, jTarget) {
-    const act = this._activeInstances(tFrom, tTo, classFilter);
-    const nS = this.nStops;
-    const tau = [], parTrip = [], parBoard = [], parOff = [];
-    for (let j = 0; j <= K_MAX; j++) {
-      tau.push(new Int32Array(nS).fill(INF));
-      parTrip.push(new Int32Array(nS).fill(-1));
-      parBoard.push(new Int32Array(nS).fill(-1));
-      parOff.push(new Int32Array(nS));
-    }
-    for (const s of origins) tau[0][s] = sampleT;
-    for (let j = 1; j <= jTarget; j++) {
-      tau[j].set(tau[j - 1]);
-      for (const code of act) {
-        const ti = code >> 4, o = (code & 15) * 1440;
-        const buf = j === 1 ? 0 : XFER_MIN;
-        let boardK = -1;
-        for (let k = this.off[ti]; k < this.off[ti + 1]; k++) {
-          const s = this.tstops[k];
-          const d = this.dep[k] + o;
-          if (boardK < 0) {
-            if (tau[j - 1][s] + buf > d) continue;
-            boardK = k;
-          }
-          if (k === boardK) continue; // 登车站本身不松弛
-          const ar = this.arr[k] + o;
-          if (ar < tau[j][s]) { tau[j][s] = ar; parTrip[j][s] = ti; parBoard[j][s] = boardK; parOff[j][s] = o; }
-        }
-      }
-    }
+    const {tau, parTrip, parBoard, parOff} = this._scanForward(origins, tFrom, tTo, classFilter, sampleT, jTarget);
     // 回溯(跳过未被该层更新的空层)
     const legs = [];
     let cur = targetStop, jj = jTarget;
     let guard = 0;
     while (jj > 0 && guard++ < 8) {
+      if (tau[jj][cur] === tau[jj - 1][cur]) { jj--; continue; }
       const ti = parTrip[jj][cur], b = parBoard[jj][cur];
       if (ti < 0 || b < 0) { jj--; continue; }
       const o = parOff[jj][cur];
@@ -288,52 +255,46 @@ class Engine {
   // dests: 目的地车站 idx; T: 截止绝对分钟; tFloor: 允许的最早出发绝对分钟
   // maxTrips: 乘车段数上限(0=直达, <0=不限); maxDur: 第二程时长上限(分钟, 0=不限)
   // 换乘缓冲: 到达某站后换乘不同车次需间隔 XFER_MIN 分钟; 同车次续行无需缓冲
-  constraint(dests, T, tFloor, classFilter, maxTrips, maxDur) {
+  constraint(dests, T, tFloor, classFilter, maxTrips, maxDur, departureUntil = T) {
     const t0 = Date.now();
     // 分层反向扫描: 第 k 层 = 用 ≤k 段乘车到达 B 的最晚出发。
-    // maxTrips<0 视为不限(取 6 层, 现实铁路链路足够); =0 即直达。
+    // maxTrips<0 使用全局最多三段乘车; =0 即直达。
     // maxDur>0 时额外要求整段行程(arrB-dep)不超该分钟数; classFilter 逐连接生效。
     const n = this.nStops;
-    const K = maxTrips != null && maxTrips >= 0 ? Math.min(8, maxTrips + 2) : 6;
-    const lab = new Int32Array(K * n).fill(-1);
-    const arrB = new Int32Array(K * n);
-    const tripAt = new Int32Array(K * n).fill(-2); // -2=未标记, -1=终点种子
-    for (const s of dests) for (let k = 0; k < K; k++) { lab[k * n + s] = T; tripAt[k * n + s] = -1; }
-    const idx = this.connIdx, cArr = this.cArr, cDep = this.cDep;
-    const cFrom = this.cFrom, cTo = this.cTo, cTrip = this.cTrip;
-    const cfOk = !classFilter || classFilter === "all";
-    for (let k = 1; k < K; k++) {
-      const base = k * n, prev = base - n;
-      for (let q = 0; q < idx.length; q++) {
-        const i = idx[q];
-        if (cArr[i] > T) continue; // 降序, 开头部分 continue 跳过
-        if (!cfOk && !this._classOk(cTrip[i], classFilter)) continue;
-        if (cDep[i] < tFloor) continue;
-        const to = cTo[i];
-        // 读 to 侧标签: 同层仅限同车次续乘(段数不变), 换车次读上一层并加换乘缓冲
-        let slot = -1, buf = -1;
-        if (lab[base + to] >= 0 && tripAt[base + to] === cTrip[i]) { slot = base + to; buf = 0; }
-        else if (lab[prev + to] >= 0) {
-          const tt = tripAt[prev + to];
-          slot = prev + to; buf = (tt === -1 || tt === cTrip[i]) ? 0 : XFER_MIN;
-        } else continue;
-        if (cArr[i] + buf > lab[slot]) continue;
-        const arrFinal = tripAt[slot] === -1 ? cArr[i] : arrB[slot]; // 该班到达 B 的绝对时刻
-        if (maxDur > 0 && arrFinal - cDep[i] > maxDur) continue;
-        const f = cFrom[i];
-        if (cDep[i] > lab[base + f]) { lab[base + f] = cDep[i]; arrB[base + f] = arrFinal; tripAt[base + f] = cTrip[i]; }
+    const rides = maxTrips != null && maxTrips >= 0 ? Math.min(K_MAX, maxTrips + 1) : K_MAX;
+    const destSet = new Set(dests);
+    let previous = Array.from({length: n}, () => []);
+    const latest = new Int32Array(n).fill(-1), arrAt = new Int32Array(n).fill(-1);
+    for (const s of dests) { latest[s] = T; arrAt[s] = T; }
+    for (let layer = 1; layer <= rides; layer++) {
+      const profiles = previous.map(p => p.slice());
+      const onboard = new Int32Array(this.instanceCount).fill(INF);
+      for (const i of this.connIdx) {
+        const dep = this.cDep[i], arr = this.cArr[i], trip = this.cTrip[i];
+        if (arr > T || dep < tFloor || !this._classOk(trip, classFilter)) continue;
+        const from = this.cFrom[i], to = this.cTo[i], instance = this.cInstance[i];
+        let final = onboard[instance];
+        if (destSet.has(to)) final = Math.min(final, arr);
+        for (const [nextDep, nextArr] of previous[to]) {
+          if (arr + XFER_MIN <= nextDep) final = Math.min(final, nextArr);
+        }
+        if (final >= INF) continue;
+        onboard[instance] = final;
+        if (maxDur > 0 && final - dep > maxDur) continue;
+        // 出发窗口只约束结果的首程；换乘仍可乘后续时段的列车。
+        if (dep <= departureUntil && (dep > latest[from] || (dep === latest[from] && final < arrAt[from]))) {
+          latest[from] = dep; arrAt[from] = final;
+        }
+        // 同站保留“更晚走”与“更早到”的 Pareto 组合，供前面的限时换乘使用。
+        const profile = profiles[from];
+        if (profile.some(([d, a]) => d >= dep && a <= final)) continue;
+        profiles[from] = profile.filter(([d, a]) => !(d <= dep && a >= final));
+        profiles[from].push([dep, final]);
       }
+      previous = profiles;
     }
-    // 汇总各层取最晚
-    const latest = new Int32Array(n).fill(-1);
-    const arrAt = new Int32Array(n).fill(-1);
-    for (let s = 0; s < n; s++) {
-      let bd = -1, ba = -1;
-      for (let k = 0; k < K; k++) if (lab[k * n + s] > bd) { bd = lab[k * n + s]; ba = arrB[k * n + s]; }
-      latest[s] = bd; arrAt[s] = ba;
-    }
-    this.lastStats = { ms: Date.now() - t0 };
-    return { latest, arrAt }; // latest[s]=从 s 出发的最晚绝对分钟(-1 不可行); arrAt[s]=该班到达 B 的时刻
+    this.lastStats = {ms: Date.now() - t0};
+    return {latest, arrAt};
   }
 
   // ---- 车站近期发车 ----
@@ -344,7 +305,7 @@ class Engine {
       if (!this._classOk(t, classFilter)) continue;
       for (let k = this.off[t]; k < this.off[t + 1] - 1; k++) {
         if (this.tstops[k] === station) {
-          for (let o = Math.floor(tFrom / 1440) * 1440; o <= tFrom + 1440; o += 1440) {
+          for (let o = Math.ceil((tFrom - this.dep[k]) / 1440) * 1440; this.dep[k] + o <= tFrom + 1440; o += 1440) {
             const d = this.dep[k] + o;
             if (d >= tFrom && d <= tFrom + 1440) {
               list.push({ trip: this.names[t], dep: d, terminal: this.tstops[this.off[t + 1] - 1], cls: this.cls[t] });

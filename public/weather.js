@@ -34,7 +34,7 @@ const Weather = (() => {
   let baseStd, baseSat, baseSatLbl, currentBase = "std";
   let geoIndex = null;
   const MODEL_COLORS = { best_match: "#2563eb", ecmwf_ifs025: "#7c3aed", gfs_seamless: "#ea580c", icon_seamless: "#0d9488" };
-  const pointCache = new Map(); // "la,lo" -> { at, pack } 会话内缓存
+  const pointRenders = new WeakMap();
 
   function linspace(a, b, n) {
     const o = new Float64Array(n);
@@ -628,29 +628,22 @@ const Weather = (() => {
     return "晴";
   }
 
-  async function fetchPoint(la, lo) {
-    const key = la.toFixed(2) + "," + lo.toFixed(2);
-    const hit = pointCache.get(key);
-    if (hit && Date.now() - hit.at < 30 * 60 * 1000) return hit.pack;
-    const r = await fetch(`/api/weather/point?la=${la.toFixed(3)}&lo=${lo.toFixed(3)}`);
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const j = await r.json();
-    if (!j || !j.ok) throw new Error(j && j.error || "接口失败");
-    pointCache.set(key, { at: Date.now(), pack: j });
-    return j;
-  }
-
   async function pointChart(container, la, lo, opts) {
     if (!container) return;
     opts = opts || {};
+    const token = {};
+    pointRenders.set(container, token);
     container.innerHTML = `<p class="mini">正在加载多模型预报…</p>`;
     let pack;
     try {
-      pack = await fetchPoint(la, lo);
+      pack = await WeatherPoint.load(la, lo);
     } catch (e) {
-      container.innerHTML = `<p class="mini" style="color:#b91c1c">预报加载失败：${e.message || e}</p>`;
+      if (pointRenders.get(container) !== token) return;
+      container.innerHTML = `<p class="mini">天气服务暂不可用，请稍后重试或在常用天气应用核对；铁路查询可正常使用。</p><button type="button" class="ghost">重试天气</button>`;
+      container.querySelector('button').onclick = () => pointChart(container, la, lo, opts);
       return;
     }
+    if (pointRenders.get(container) !== token) return;
     drawPointChart(container, pack, opts);
   }
 
@@ -843,14 +836,9 @@ const Weather = (() => {
 
   /* ---------- 对外：到达时刻天气（候选清单/详情用） ---------- */
   async function arrivalWx(la, lo, minuteAbs) {
-    if (!CORE) return null;
-    const g = await ensureGrid();
-    const s = clampStep(stepForMinute(minuteAbs));
-    const temp = sample(g.temp, la, lo, s);
-    const prec = sample(g.precip, la, lo, s);
-    const code = sampleCode(la, lo, s);
-    if (!Number.isFinite(temp)) return null;
-    return { temp: Math.round(temp), precip: Number.isFinite(prec) ? Math.round(prec * 10) / 10 : null, code, txt: wxTxt(code, prec) };
+    const anchor = typeof state !== 'undefined' ? state.anchor.getTime() : Date.parse(chinaYmd() + 'T00:00:00+08:00');
+    const w = await WeatherPoint.arrival(la, lo, anchor + minuteAbs * 60000);
+    return w ? {...w, txt:wxTxt(w.code, w.precip)} : null;
   }
 
   /* ---------- UI ---------- */

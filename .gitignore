@@ -9,3 +9,5 @@ tmp_*
 .browse-profile/
 data/wx-cache/
 .zcode/
+.wrangler/
+.railway-update-*/

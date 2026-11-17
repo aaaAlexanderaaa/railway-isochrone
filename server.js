@@ -220,7 +220,8 @@ const server = http.createServer((req, res) => {
           return sendJson(req, res, 400, { error: "参数错误: 需要 d(目的地), T(截止绝对分钟)" });
         }
         const r = engine.constraint(d, T, Number.isFinite(floor) ? floor : 0, ccls,
-          Number.isFinite(xf) ? xf : -1, Number.isFinite(dur) ? dur : 0);
+          Number.isFinite(xf) ? xf : -1, Number.isFinite(dur) ? dur : 0,
+          u.searchParams.has("until") ? Number(u.searchParams.get("until")) : T);
         const out = { latest: Array.from(r.latest), arrAt: Array.from(r.arrAt) };
         if (cache.size > CACHE_MAX) cache.clear();
         cache.set(key, out);

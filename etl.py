@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-GTFS -> 紧凑路网 JSON（供 Node 引擎加载）
+Role: GTFS -> 紧凑路网 JSON；拥有过滤和索引对齐，契约 docs/specs/delivery.md。
 
 用法: python etl.py [gtfs_dir] [out_json]
 """
 import csv, json, os, re, sys
 from collections import defaultdict
+from lib.provinces import province_at
 
 GTFS_DIR = sys.argv[1] if len(sys.argv) > 1 else os.path.join("data", "gtfs")
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join("public", "data", "net.json")
@@ -31,11 +32,23 @@ MAX_SEG_KMH = 400.0
 # ---------- stops ----------
 stations = []           # [name, lat, lon]
 sid2idx = {}
+station_by_name = {}
+merged_stops = 0
 with open(os.path.join(GTFS_DIR, "stops.txt"), encoding="utf-8") as f:
     for row in csv.DictReader(f):
+        name, lat, lon = row["stop_name"], float(row["stop_lat"]), float(row["stop_lon"])
+        if name in station_by_name:
+            idx = station_by_name[name]
+            old = stations[idx]
+            if haversine_km(lat, lon, old[1], old[2]) > 0.5:
+                raise ValueError(f"同名异地车站需人工核对: {name}")
+            sid2idx[row["stop_id"]] = idx
+            merged_stops += 1
+            continue
         sid2idx[row["stop_id"]] = len(stations)
-        stations.append([row["stop_name"], float(row["stop_lat"]), float(row["stop_lon"])])
-print(f"stops: {len(stations)}")
+        station_by_name[name] = len(stations)
+        stations.append([name, lat, lon])
+print(f"stops: {len(stations)}, merged aliases: {merged_stops}")
 
 # ---------- trips ----------
 trip_names = []         # 车次号
@@ -77,15 +90,13 @@ off = [0]
 t_stops, t_dep, t_arr, t_dist = [], [], [], []
 degree = [0] * len(stations)
 monotonic_violations = 0
-kept = 0
+invalid_time_dropped = 0
+terminal_times_normalized = 0
+kept_names, kept_classes = [], []
+missing_trips = 0
 speed_trips_dropped = []   # (车次, 前站, 后站, km, dt分钟)
 dropped_trip_ids = set()
-for i, name in enumerate(trip_names):
-    rows = per_trip.get(f"{name}")  # 注意: trip_id 与 trip_short_name 基本一致，但有例外
-    # 用索引对齐更稳妥：trip_names 顺序来自 trips.txt，而 per_trip 键是 trip_id。
-    # 重建: 直接按 trips.txt 顺序重新读一遍 id。
-    kept += 1
-# 上面占位逻辑不健壮，改为直接重读 trips.txt 生成有序 id 列表
+# 用 trip_id 关联停站；只有实际保留的车次才进入全部并行数组。
 trip_ids = []
 with open(os.path.join(GTFS_DIR, "trips.txt"), encoding="utf-8") as f:
     for row in csv.DictReader(f):
@@ -97,6 +108,18 @@ assert len(trip_ids) == len(trip_names)
 for i, tid in enumerate(trip_ids):
     rows = sorted(per_trip.get(tid, []))
     if len(rows) < 2:
+        missing_trips += 1
+        continue
+    # 终点不允许上车，出发字段统一不早于到达。中途时刻逆序不能猜，整趟剔除。
+    if rows[-1][3] < rows[-1][2]:
+        r = rows[-1]
+        rows[-1] = (r[0], r[1], r[2], r[2], r[4])
+        terminal_times_normalized += 1
+    violations = sum(r[3] < r[2] or (k > 0 and r[2] < rows[k - 1][3])
+                     for k, r in enumerate(rows))
+    if violations:
+        invalid_time_dropped += 1
+        monotonic_violations += violations
         continue
     # 物理速度守卫：任一相邻段超速 -> 整趟丢弃（数据损坏，宁可少一班不可错一班）
     bad_speed = False
@@ -134,10 +157,13 @@ for i, tid in enumerate(trip_ids):
             monotonic_violations += 1
     t_stops.extend(seq); t_dep.extend(deps); t_arr.extend(arrs); t_dist.extend(dists)
     off.append(len(t_stops))
+    kept_names.append(trip_names[i]); kept_classes.append(trip_class[i])
     for s in set(seq):
         degree[s] += 1
 
-print(f"real trips with stop_times: {len(off)-1}, stop_times rows: {len(t_stops)}, monotonic violations: {monotonic_violations}")
+trip_names, trip_class = kept_names, kept_classes
+print(f"invalid-time dropped: {invalid_time_dropped}, terminal departures normalized: {terminal_times_normalized}")
+print(f"real trips with stop_times: {len(off)-1}, stop_times rows: {len(t_stops)}, monotonic violations: {monotonic_violations}, missing trips: {missing_trips}")
 if speed_trips_dropped:
     print(f"speed-guard dropped {len(speed_trips_dropped)} trips (> {MAX_SEG_KMH}km/h):")
     for t in speed_trips_dropped[:10]:
@@ -229,7 +255,19 @@ OVERRIDES = {
 }
 
 
-# ---------- 站点省份(邻近城市启发式) ----------
+# 站名后缀不是行政区划：西平西属于东莞，不能归并河南西平并污染省份锚点。
+OVERRIDES.update({
+    "西平西": "东莞", "常平": "东莞", "常平东": "东莞", "常平南": "东莞",
+    "麻涌": "东莞", "东莞西": "东莞", "东莞": "东莞", "东莞东": "东莞",
+    "广州新塘": "广州", "广州大学城": "广州", "广州长隆": "广州", "琶洲": "广州",
+    "番禺": "广州", "增城": "广州", "增城南": "广州", "南沙北": "广州", "南沙": "广州",
+    "怀集": "肇庆", "郁南": "云浮",
+    "横琴": "珠海", "三灶东": "珠海", "珠海长隆": "珠海", "深圳机场": "深圳",
+    "陆丰南": "汕尾", "罗源": "福州", "平潭": "福州", "牟平": "烟台",
+    "曹妃甸港": "唐山", "玉环": "台州",
+})
+
+# ---------- 站点省份（边界优先，明确城市映射兜底） ----------
 CITY_PROV = {
     "哈尔滨": "黑龙江", "齐齐哈尔": "黑龙江", "大庆": "黑龙江", "牡丹江": "黑龙江", "佳木斯": "黑龙江",
     "长春": "吉林", "吉林": "吉林", "四平": "吉林", "延吉": "吉林", "通化": "吉林",
@@ -261,9 +299,9 @@ CITY_PROV = {
     "北京": "北京", "天津": "天津", "上海": "上海", "重庆": "重庆",
 }
 
-# 高流量站的省名勘误(2026-09-19 审计): 这些城市不在上表、被最近锚点误判到邻省。
-# 依据行政区划核对; 其余 ~4000 个低班次县城站仍走最近锚点近似(界面已注明)。
+# 行政区划明确的补充映射，仅在省级边界未覆盖坐标时使用。
 CITY_PROV.update({
+    "东莞": "广东", "肇庆": "广东", "云浮": "广东", "汕尾": "广东",
     "衡水": "河北", "廊坊": "河北", "涿州": "河北", "霸州": "河北",
     "日照": "山东", "枣庄": "山东",
     "孝感": "湖北", "随州": "湖北",
@@ -279,15 +317,6 @@ CITY_PROV.update({
     "香港西九龙": "香港",
 })
 
-import math
-def nearest_prov(la, lo, anchors):
-    best, bd = None, 1e18
-    for (ala, alo, pv) in anchors:
-        d = (la - ala) ** 2 + ((lo - alo) * math.cos(math.radians(la))) ** 2
-        if d < bd:
-            bd, best = d, pv
-    return best
-
 def city_of(name):
     if name in OVERRIDES:
         return OVERRIDES[name]
@@ -299,18 +328,11 @@ cities = []
 for name, lat, lon in stations:
     cities.append(city_of(name))
 
-# 省份锚点: 取各已知城市的代表站坐标
-anchor_by_city = {}
-for i, (name, lat, lon) in enumerate(stations):
-    c = cities[i]
-    if c in CITY_PROV and (c not in anchor_by_city or degree[i] > anchor_by_city[c][2]):
-        anchor_by_city[c] = (lat, lon, degree[i])
-anchors = [(la, lo, CITY_PROV[c]) for c, (la, lo, d) in anchor_by_city.items()]
 provs = []
 for i, (name, lat, lon) in enumerate(stations):
     c = cities[i]
-    provs.append(CITY_PROV.get(c) or nearest_prov(lat, lon, anchors))
-print(f"province anchors: {len(anchors)}, stations mapped: {len(provs)}")
+    provs.append(("老挝" if name in {"磨丁", "孟赛", "琅勃拉邦", "万荣", "万象"} else None) or province_at(lat, lon) or CITY_PROV.get(c) or "待核对")
+print(f"station regions: {len(provs)}, unmapped: {provs.count('待核对')}")
 
 # ---------- station -> trips 索引 ----------
 st_trips = [[] for _ in stations]
@@ -330,7 +352,8 @@ for lst in st_trips:
 
 # ---------- 质量校验 ----------
 def known_pair(a, b):
-    ia = sid2idx.get(f"STN_{a}"); ib = sid2idx.get(f"STN_{b}")
+    ia = next((i for i, s in enumerate(stations) if s[0] == a), None)
+    ib = next((i for i, s in enumerate(stations) if s[0] == b), None)
     if ia is None or ib is None:
         return f"{a}->{b}: 站缺失"
     best = None; cnt = 0
@@ -395,6 +418,10 @@ data = {
         "builtAt": __import__("datetime").datetime.now().strftime("%Y-%m-%d"),
         "stations": len(stations),
         "trips": len(off) - 1,
+        "quality": {"speedDropped": len(speed_trips_dropped), "missingTrips": missing_trips,
+                    "monotonicViolations": monotonic_violations, "mergedStops": merged_stops,
+                    "invalidTimeDropped": invalid_time_dropped, "terminalTimesNormalized": terminal_times_normalized,
+                    "provinceUnmapped": sum(p == "待核对" for p in provs)},
     },
     "stations": [
         {"n": s[0], "la": round(s[1], 5), "lo": round(s[2], 5),

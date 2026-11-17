@@ -30,6 +30,8 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import urllib.error
+import time
 import zipfile
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -66,6 +68,7 @@ def versions_to_delete(
     retention_days: int = RETENTION_DAYS,
     current_id: str | None = None,
     keep_previous: bool = True,
+    previous_id: str | None = None,
 ) -> list[str]:
     """决定哪些归档可以删。不变量：
 
@@ -78,7 +81,8 @@ def versions_to_delete(
         vid = v.get("id") or ""
         if current_id and vid == current_id:
             continue
-        d = tag_date(vid)
+        saved = v.get("archivedAt") or v.get("builtAt")
+        d = datetime.fromisoformat(saved.replace("Z", "+00:00")).replace(tzinfo=None) if saved else tag_date(vid)
         if d is None and v.get("date"):
             try:
                 d = datetime.strptime(v["date"][:10], "%Y-%m-%d")
@@ -91,23 +95,42 @@ def versions_to_delete(
     cutoff = now.replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=retention_days)
     keep: set[str] = set()
     if keep_previous and dated:
-        keep.add(dated[0][1])
+        keep.add(previous_id or dated[0][1])
     for d, vid, _ in dated:
         if d >= cutoff:
             keep.add(vid)
     return [vid for _, vid, _ in dated if vid not in keep]
 
 
+def request(url: str):
+    headers = {"User-Agent": UA, "Accept": "application/json"}
+    token = os.environ.get("GITHUB_TOKEN")
+    if token and urllib.parse.urlparse(url).hostname == "api.github.com":
+        headers["Authorization"] = "Bearer " + token
+    return urllib.request.Request(url, headers=headers)
+
+
 def http_json(url: str) -> Any:
-    req = urllib.request.Request(url, headers={"User-Agent": UA, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=60) as r:
-        return json.loads(r.read().decode("utf-8"))
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request(url), timeout=60) as r:
+                return json.load(r)
+        except (OSError, ValueError):
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def download(url: str, dest: str) -> None:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=120) as r, open(dest, "wb") as f:
-        shutil.copyfileobj(r, f)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(request(url), timeout=120) as r, open(dest, "wb") as f:
+                shutil.copyfileobj(r, f)
+            return
+        except OSError:
+            if attempt == 2:
+                raise
+            time.sleep(2 ** attempt)
 
 
 def fetch_release(tag: str | None) -> dict[str, Any]:
@@ -120,6 +143,8 @@ def fetch_release(tag: str | None) -> dict[str, Any]:
     zip_asset = next((a for a in assets if a.get("name") == "output_gtfs.zip"), None)
     if not zip_asset:
         raise SystemExit(f"release {rel.get('tag_name')} 没有 output_gtfs.zip")
+    if not re.fullmatch(r"gtfs-\d{8}-\d{6}", rel["tag_name"]):
+        raise ValueError("不支持的 release 标识")
     return {
         "tag": rel["tag_name"],
         "published": rel.get("published_at") or "",
@@ -129,35 +154,63 @@ def fetch_release(tag: str | None) -> dict[str, Any]:
 
 
 def extract_gtfs(zip_path: str, dest_dir: str) -> None:
+    # 只提取已知文件，不信任 ZIP 路径；调用方提供全新目录，防旧版可选文件混入。
+    wanted = {"agency.txt", "calendar.txt", "routes.txt", "stops.txt",
+              "stop_times.txt", "trips.txt", "feed_info.txt", "calendar_dates.txt"}
+    required = {"routes.txt", "stops.txt", "stop_times.txt", "trips.txt"}
     os.makedirs(dest_dir, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="gtfs-") as tmp:
-        with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(tmp)
-        # 若 zip 内有一层目录，找到含 stops.txt 的那一层
-        root = tmp
-        for dirpath, _dirnames, filenames in os.walk(tmp):
-            if "stops.txt" in filenames and "trips.txt" in filenames:
-                root = dirpath
-                break
-        else:
-            raise SystemExit("zip 中未找到 stops.txt / trips.txt")
-        wanted = ("agency.txt", "calendar.txt", "routes.txt", "stops.txt",
-                  "stop_times.txt", "trips.txt", "feed_info.txt", "calendar_dates.txt")
-        os.makedirs(dest_dir, exist_ok=True)
-        for name in wanted:
-            src = os.path.join(root, name)
-            if os.path.isfile(src):
-                shutil.copy2(src, os.path.join(dest_dir, name))
+    found = set()
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            name = info.filename.replace("\\", "/").rsplit("/", 1)[-1]
+            if name not in wanted or info.is_dir():
+                continue
+            if name in found or info.file_size > 512 * 1024 * 1024:
+                raise ValueError("ZIP 文件重复或过大: " + name)
+            with zf.open(info) as src, open(os.path.join(dest_dir, name), "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            found.add(name)
+    if not required <= found:
+        raise ValueError("ZIP 缺少 GTFS 文件: " + ", ".join(sorted(required - found)))
 
 
-def run_etl(release: str, out_json: str) -> None:
-    env = os.environ.copy()
-    env["GTFS_RELEASE"] = release
-    with open(RELEASE_FILE, "w", encoding="utf-8") as f:
-        f.write(release + "\n")
-    cmd = [sys.executable, os.path.join(ROOT, "etl.py"), GTFS_DIR, out_json]
-    log("运行 " + " ".join(cmd))
-    subprocess.check_call(cmd, cwd=ROOT, env=env)
+def run_etl(release: str, out_json: str, gtfs_dir: str = GTFS_DIR) -> None:
+    env = {**os.environ, "GTFS_RELEASE": release}
+    subprocess.check_call([sys.executable, os.path.join(ROOT, "etl.py"), gtfs_dir, out_json],
+                          cwd=ROOT, env=env)
+
+
+def validate_candidate(candidate: str) -> None:
+    subprocess.check_call(["node", "scripts/validate_dataset.js", candidate], cwd=ROOT)
+    subprocess.check_call(["node", "test_engine.js"], cwd=ROOT,
+                          env={**os.environ, "NET_PATH": candidate})
+
+
+def promote(staged_data: str, staged_gtfs: str, tag: str, tmp: str) -> None:
+    # 同一文件系统替换；任一步失败回滚已替换项（包含 manifest、归档和原始输入）。
+    staged_release = os.path.join(tmp, "RELEASE")
+    with open(staged_release, "w", encoding="utf-8") as f:
+        f.write(tag + "\n")
+    swapped = []
+    try:
+        for i, (src, dst) in enumerate(((staged_gtfs, GTFS_DIR), (staged_release, RELEASE_FILE),
+                                       (staged_data, PUB_DATA))):
+            backup = os.path.join(tmp, "backup-" + str(i))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            had = os.path.exists(dst)
+            if had:
+                os.replace(dst, backup)
+            swapped.append((dst, backup, had))
+            os.replace(src, dst)
+    except BaseException:
+        for dst, backup, had in reversed(swapped):
+            if os.path.isdir(dst):
+                shutil.rmtree(dst)
+            elif os.path.exists(dst):
+                os.remove(dst)
+            if had:
+                os.replace(backup, dst)
+        raise
 
 
 def load_manifest() -> dict[str, Any]:
@@ -210,7 +263,7 @@ def archive_current_if_needed(m: dict[str, Any]) -> None:
 def rotate_archives(m: dict[str, Any], dry_run: bool = False) -> list[str]:
     current = m.get("current")
     versions = m.get("versions") or []
-    doomed = versions_to_delete(versions, datetime.now(), RETENTION_DAYS, current_id=current, keep_previous=True)
+    doomed = versions_to_delete(versions, datetime.now(), RETENTION_DAYS, current_id=current, keep_previous=True, previous_id=m.get("previous"))
     if not doomed:
         log("归档无需滚动删除")
         return []
@@ -253,6 +306,8 @@ def update_submodule() -> None:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="更新铁路 GTFS 数据集并按月滚动归档")
+    ap.add_argument("--rebuild-local", action="store_true", help="用本地已下载的GTFS重新生成并完整验证")
+    ap.add_argument("--force", action="store_true", help="重新构建当前 release")
     ap.add_argument("--tag", help="指定 release tag，默认 latest")
     ap.add_argument("--rotate-only", action="store_true", help="只做归档滚动，不拉新数据")
     ap.add_argument("--skip-submodule", action="store_true")
@@ -266,13 +321,18 @@ def main() -> int:
             save_manifest(m)
         return 0
 
-    if not args.skip_submodule:
-        update_submodule()
-
-    rel = fetch_release(args.tag)
+    if args.rebuild_local:
+        tag = open(RELEASE_FILE, encoding="utf-8").read().strip()
+        if tag != m.get("current") or (args.tag and args.tag != tag):
+            raise ValueError("本地原始数据与当前版本不一致，不能本地重建")
+        args.force = True
+        rel = {"tag": tag, "size": 0, "zip_url": "本地GTFS", "published": next(
+            (v.get("publishedAt", "") for v in m.get("versions", []) if v["id"] == tag), "")}
+    else:
+        rel = fetch_release(args.tag)
     tag = rel["tag"]
     log(f"上游 release {tag}  ({rel['size']} bytes)  {rel['zip_url']}")
-    if m.get("current") == tag and os.path.isfile(NET_JSON):
+    if not args.force and m.get("current") == tag and os.path.isfile(NET_JSON):
         log("已是当前版本，只检查归档滚动")
         rotate_archives(m, dry_run=args.dry_run)
         if not args.dry_run:
@@ -285,41 +345,59 @@ def main() -> int:
         log("dry-run 将删除: " + (", ".join(doomed) if doomed else "(无)"))
         return 0
 
-    archive_current_if_needed(m)
-
-    os.makedirs(os.path.join(ROOT, "data"), exist_ok=True)
-    zip_path = os.path.join(ROOT, "data", "output_gtfs.zip")
-    log("下载 " + rel["zip_url"])
-    download(rel["zip_url"], zip_path)
-    extract_gtfs(zip_path, GTFS_DIR)
-
-    tmp_out = os.path.join(PUB_DATA, f".net.{tag}.json")
-    os.makedirs(PUB_DATA, exist_ok=True)
-    run_etl(tag, tmp_out)
-
-    dest_dir = os.path.join(ARCHIVE, tag)
-    os.makedirs(dest_dir, exist_ok=True)
-    shutil.copy2(tmp_out, os.path.join(dest_dir, "net.json"))
-    shutil.move(tmp_out, NET_JSON)
-
-    with open(NET_JSON, encoding="utf-8") as f:
-        meta = json.load(f).get("meta") or {}
-    entry = {
-        "id": tag,
-        "date": (tag_date(tag) or datetime.now()).strftime("%Y-%m-%d"),
-        "stations": meta.get("stations"),
-        "trips": meta.get("trips"),
-        "file": f"archive/{tag}/net.json",
-        "publishedAt": rel.get("published"),
-        "builtAt": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    versions = [v for v in m.get("versions") or [] if v.get("id") != tag]
-    versions.insert(0, entry)
-    m["current"] = tag
-    m["updatedAt"] = entry["builtAt"]
-    m["versions"] = versions
-    rotate_archives(m)
-    save_manifest(m)
+    with tempfile.TemporaryDirectory(prefix=".railway-update-", dir=ROOT) as tmp:
+        candidate_gtfs = os.path.join(tmp, "gtfs")
+        zip_path = os.path.join(tmp, "gtfs.zip")
+        if args.rebuild_local:
+            shutil.copytree(GTFS_DIR, candidate_gtfs)
+        else:
+            download(rel["zip_url"], zip_path)
+            if rel["size"] and os.path.getsize(zip_path) != rel["size"]:
+                raise ValueError("下载大小与 release 不符")
+            extract_gtfs(zip_path, candidate_gtfs)
+        candidate = os.path.join(tmp, "net.json")
+        run_etl(tag, candidate, candidate_gtfs)
+        validate_candidate(candidate)
+        # 验证通过后才准备归档；所有变更先写入临时发布目录。
+        staged_data = os.path.join(tmp, "public-data")
+        shutil.copytree(PUB_DATA, staged_data)
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with open(candidate, encoding="utf-8") as f:
+            meta = json.load(f)["meta"]
+        versions = m.get("versions") or []
+        old_tag = m.get("current")
+        if old_tag:
+            old_dir = os.path.join(staged_data, "archive", old_tag)
+            os.makedirs(old_dir, exist_ok=True)
+            shutil.copy2(NET_JSON, os.path.join(old_dir, "net.json"))
+            if not any(v["id"] == old_tag for v in versions):
+                versions.append({"id": old_tag, "archivedAt": stamp,
+                                 "file": f"archive/{old_tag}/net.json"})
+        entry = {"id": tag, "date": tag_date(tag).strftime("%Y-%m-%d"),
+                 "stations": meta["stations"], "trips": meta["trips"],
+                 "file": f"archive/{tag}/net.json", "publishedAt": rel["published"],
+                 "builtAt": stamp}
+        # 重建同一 tag 不重置归档年龄。
+        prior = next((v for v in versions if v["id"] == tag), None)
+        if prior:
+            entry["builtAt"] = prior.get("builtAt", stamp)
+        versions = [entry] + [v for v in versions if v["id"] != tag]
+        doomed = versions_to_delete(versions, datetime.now(), RETENTION_DAYS, current_id=tag, previous_id=old_tag if old_tag != tag else m.get("previous"))
+        for vid in doomed:
+            path = os.path.join(staged_data, "archive", vid)
+            if os.path.isdir(path):
+                shutil.rmtree(path)
+        dest = os.path.join(staged_data, entry["file"])
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        shutil.copy2(candidate, dest)
+        shutil.copy2(candidate, os.path.join(staged_data, "net.json"))
+        m.update(current=tag, previous=old_tag if old_tag != tag else m.get("previous"), updatedAt=stamp, retentionDays=RETENTION_DAYS,
+                 versions=[v for v in versions if v["id"] not in doomed])
+        with open(os.path.join(staged_data, "manifest.json"), "w", encoding="utf-8") as f:
+            json.dump(m, f, ensure_ascii=False, indent=2); f.write("\n")
+        promote(staged_data, candidate_gtfs, tag, tmp)
+    if not args.skip_submodule and not args.rebuild_local:
+        update_submodule()
     sync_engine()
     log(f"完成。当前 {tag} · 归档 {len(m['versions'])} 份 · 保留 ≥{RETENTION_DAYS} 天")
     return 0

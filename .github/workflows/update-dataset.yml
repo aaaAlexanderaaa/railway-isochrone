@@ -1,35 +1,57 @@
 name: update-dataset
 on:
   schedule:
-    # 上游 GTFS 周更；周一 UTC 6:00 ≈ 北京时间下午
-    - cron: "0 6 * * 1"
+    # 北京时间每日 14:23 检查；相同版本不重建，失败次日重试。
+    - cron: '23 6 * * *'
   workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: update-dataset
+  cancel-in-progress: false
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
+    outputs:
+      revision: ${{ steps.commit.outputs.revision }}
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          ref: main
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: '3.12'
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-      - name: Fetch latest GTFS and rebuild net.json
-        run: python3 scripts/update_dataset.py
-      - name: Rotate invariants
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Verify update protections
         run: python3 scripts/test_update_dataset.py
-      - name: Engine regression
-        run: node test_engine.js
-      - name: Commit if changed
+      - name: Download, validate and replace snapshot
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/update_dataset.py --skip-submodule
+      - run: npm test
+      - run: npm run build
+      - name: Commit verified dataset
+        id: commit
         run: |
-          git config user.name "dataset-bot"
-          git config user.email "dataset-bot@users.noreply.github.com"
-          git add public/data data/gtfs data/RELEASE public/engine.js vendor/chinese-railway-gtfs
-          git diff --cached --quiet && echo "no dataset change" && exit 0
-          git commit -m "chore: 更新铁路 GTFS 周更快照"
-          git push
+          git config user.name 'dataset-bot'
+          git config user.email 'dataset-bot@users.noreply.github.com'
+          git add public/data data/gtfs data/RELEASE public/engine.js
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore: 更新已验证铁路时刻表'
+            git push origin HEAD:main
+          fi
+          echo "revision=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+  # GITHUB_TOKEN 的 push 不会触发另一个 workflow；显式调用部署，未变更时也可重试失败发布。
+  deploy:
+    needs: update
+    uses: ./.github/workflows/deploy.yml
+    with:
+      revision: ${{ needs.update.outputs.revision }}
+    secrets: inherit

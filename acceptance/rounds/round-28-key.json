@@ -1,0 +1,18 @@
+{
+ "round": 28,
+ "identity": "探亲转途",
+ "origin": "长春",
+ "time_setting": "now",
+ "budget": [
+  null,
+  3
+ ],
+ "pref": "direct",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "明天",
+  "time": "19:00"
+ },
+ "question": "我去长春看朋友，还想顺路再逛一个城市。现在是周二00:50，不想坐超过3个小时的车，最好全程直达，懒得换乘。明天19:00之前我必须回到长春，不能误事。帮我看看有哪些现实可行的选择？"
+}

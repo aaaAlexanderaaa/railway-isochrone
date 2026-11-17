@@ -2,10 +2,16 @@
   X-Content-Type-Options: nosniff
 
 /data/net.json
-  Cache-Control: public, max-age=3600
+  Cache-Control: public, max-age=0, must-revalidate
 
 /data/archive/*
   Cache-Control: public, max-age=86400
 
 /vendor/*
   Cache-Control: public, max-age=604800
+
+/data/manifest.json
+  Cache-Control: public, max-age=0, must-revalidate
+
+/*.js
+  Cache-Control: public, max-age=0, must-revalidate

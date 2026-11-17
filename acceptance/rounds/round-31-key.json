@@ -1,0 +1,18 @@
+{
+ "round": 31,
+ "identity": "带娃家庭",
+ "origin": "上海",
+ "time_setting": "tonight",
+ "budget": [
+  null,
+  2
+ ],
+ "pref": "gdc",
+ "constraint": {
+  "type": "return",
+  "dest": null,
+  "day": "后天",
+  "time": "21:30"
+ },
+ "question": "我带着六岁的孩子，行李不多但不想把时间全耗在赶车上。我目前在上海。今晚21:30前后我就想出发，不想坐超过2个小时的车，尽量只坐高铁或动车。后天21:30之前我必须回到上海，不能误事。帮我看看有哪些现实可行的选择？"
+}

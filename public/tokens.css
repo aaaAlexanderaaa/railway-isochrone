@@ -1,0 +1,13 @@
+/* Role: 全站基础颜色变量；契约 docs/specs/exploration.md。 */
+:root {
+  --bg: #f5f6f8;
+  --panel: #ffffff;
+  --ink: #1c2733;
+  --ink2: #5b6b7b;
+  --line: #dfe4ea;
+  --accent: #c2410c;
+  --accent2: #1d4ed8;
+  --ok: #15803d;
+  --warn: #b45309;
+  --bad: #b91c1c;
+}

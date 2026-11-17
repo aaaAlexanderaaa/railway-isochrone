@@ -1,2 +1,2 @@
-agency_id,agency_name,agency_url,agency_timezone,agency_email
-A1,China Railway,https://12306.cn,Asia/Shanghai,kyfw@12306.cn
+agency_id,agency_name,agency_url,agency_timezone
+CR,中国国家铁路集团有限公司,https://www.12306.cn,Asia/Shanghai

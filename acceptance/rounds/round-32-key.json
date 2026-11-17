@@ -1,0 +1,18 @@
+{
+ "round": 32,
+ "identity": "退休夫妇",
+ "origin": "常州",
+ "time_setting": "tomorrow",
+ "budget": [
+  3,
+  4
+ ],
+ "pref": "freq",
+ "constraint": {
+  "type": "none",
+  "dest": null,
+  "day": null,
+  "time": null
+ },
+ "question": "我们老两口退休了，时间充裕，但坐太久车吃不消。我目前在常州。我打算明天白天出发，车程控制在3到4小时之间吧，希望班次多一点，时间上灵活些，错过一趟不至于完蛋。别的没什么安排，去哪都行。帮我看看有哪些现实可行的选择？"
+}

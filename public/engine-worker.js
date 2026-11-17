@@ -18,7 +18,7 @@ self.onmessage = async (ev) => {
     let result;
     if (method === "boot") {
       const url = (args && args.netUrl) || "data/net.json";
-      const r = await fetch(url);
+      const r = await fetch(url, {cache: "no-cache"});
       if (!r.ok) throw new Error(`加载时刻表失败 HTTP ${r.status}`);
       const data = await r.json();
       engine = new EngineImpl(data);
@@ -41,7 +41,8 @@ self.onmessage = async (ev) => {
       const d = parseList(args.d), T = Number(args.T), floor = Number(args.floor);
       const xf = Number(args.xf ?? -1), dur = Number(args.dur || 0), ccls = args.cls || "all";
       const r = engine.constraint(d, T, Number.isFinite(floor) ? floor : 0, ccls,
-        Number.isFinite(xf) ? xf : -1, Number.isFinite(dur) ? dur : 0);
+        Number.isFinite(xf) ? xf : -1, Number.isFinite(dur) ? dur : 0,
+        args.until == null ? T : Number(args.until));
       result = { latest: Array.from(r.latest), arrAt: Array.from(r.arrAt) };
     } else if (method === "departures") {
       const s = Number(args.s), f = Number(args.f);

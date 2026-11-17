@@ -1,0 +1,38 @@
+[[tasks]]
+id = "discipline-2026-11"
+status = "done"
+sources = ["SRC-001"]
+summary = "同步适用纪律，记录架构和所有者，完成实现前自我质询。"
+follow_up = "验收规则由 SRC-002 纠正，见 verification-discipline-correction。"
+
+[[tasks]]
+id = "reliable-cloudflare"
+status = "in_progress"
+sources = ["SRC-001"]
+specs = ["delivery", "exploration"]
+summary = "安全更新、查询修复和 Cloudflare 本地实现已完成验证，待线上发布和自动更新首跑。"
+human_check = "not_requested"
+verification = "docs/reviews/2026-11-delivery.md#本次提交前检查"
+remaining = "配置 Cloudflare 发布凭据，执行首次云端发布并确认自动更新工作流运行。"
+
+[[tasks]]
+id = "exploration-modules"
+status = "later"
+specs = ["exploration"]
+summary = "按表单事件、列表、天气绘制继续拆分历史大文件；核心可靠后评估推荐功能。"
+
+[[tasks]]
+id = "verification-discipline-correction"
+status = "done"
+sources = ["SRC-002"]
+specs = ["exploration"]
+summary = "依据 template-project 取消强制随机身份验收，停用生成器，统一验证规则与历史报告称呼。"
+decision = "docs/discipline-adoption.md"
+human_check = "not_requested"
+verification = [
+  "Python 3.11 运行 template-project/scripts/read_rules.py onboard --target . 成功，模板提交 4b9ee0be32f9bfdddca48d7303db227ceb14ab00。",
+  "在项目根目录调用 persona_gen.py：无参数、999999、999999 meetup 均返回 1 和停用提示；调用前后历史轮次文件的清单与 SHA-256 一致。",
+  "纪律修正时，归档生成器与修改前备份逐字节一致；scripts/test_browser.js 仅调整注释。后续提交前检查的脚本修复见交付验证记录。",
+  "sources.toml、work.toml、docs-policy.toml 解析通过，SRC-002 原话核对一致；本次涉及 Markdown 的 28 个本地链接和章节锚点有效。",
+  "现行文档和工具入口搜索完成，随机身份循环要求已移除；git diff --check 与 node --check scripts/test_browser.js 通过。",
+]

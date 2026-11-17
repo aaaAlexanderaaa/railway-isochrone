@@ -1,183 +1,125 @@
-# 铁路可达圈（Rail Radius）
+# 铁路可达圈
 
-> 回答一个问题：**在当前地点、时间预算和后续行程约束下，铁路实际上能把我带到哪些地方？**
+按出发地、日期和乘车时间预算探索铁路目的地；查看车次、换乘和返程衔接，
+也可以叠加不同出发地寻找大家都能到达的城市。铁路查询在浏览器 Worker 中运行，
+Cloudflare Pages 提供静态站点，Pages Functions 提供可选天气与公布票价代理。
 
-不是一个"查某趟车"的工具，而是一个**探索选择空间**的工具：它把全国铁路时刻表演算成
-"此刻/今天/明天、X–Y 小时预算内，哪些地方现实可达"，并用班次密度、直达性、典型耗时等
-指标帮助你理解每个目的地的**可达质量**，而不只是最短时间。
+## 本地运行
 
-## 快速开始
-
-```bash
-# 1. 数据已就位（public/data/net.json 由 etl.py 生成，无需重复执行）
-#    如需从 GTFS 重建: python etl.py data/gtfs public/data/net.json
-# 2. 启动服务
-node server.js
-# 3. 打开 http://127.0.0.1:8787
-```
-
-依赖：Node.js ≥ 18（无第三方 npm 运行时依赖；leaflet 已本地 vendor）。
-
-数据更新（推荐）：上游仓库作为 git submodule（`vendor/chinese-railway-gtfs`），
-时刻表本体在 GitHub Releases。一条命令拉取最新快照、重建路网、归档旧版：
+需要 Node.js 22+、Python 3.10+；建议 Node.js 24、Python 3.12。
 
 ```bash
-./scripts/redeploy.sh                 # 更新数据集
-DEPLOY=1 ./scripts/redeploy.sh        # 更新后 wrangler pages deploy
+npm ci
+npm run build
+npm start
+# http://127.0.0.1:8787
 ```
 
-归档策略：`public/data/archive/<release>/net.json` 至少保留 **31 天**，并且始终留着
-上一份以便回滚；满一个月之后的更早版本才会滚动删除。清单见 `public/data/manifest.json`。
+Cloudflare 运行环境预览（同样不需要账号）：
 
-## 产品能力
-
-- **时间预算带查询**：出发地（城市或车站）+ 日期 + 出发时段 + 单程时长区间（如 3–4h），
-  地图与列表展示带内可达目的地。入带判定 = 典型耗时 ∈ [下限−30min, 上限]——预算本质是
-  上限，下限保留 30 分钟弹性；同时列表尾部附"更快到达"区（典型低于下限但 ≥30min 的
-  目的地），兼容"预算=上限"的理解，不隐藏更快的选择。修改时段/车种自动重新查询；
-  换乘上限、预算、最晚到达为即时过滤。
-- **可达质量指标**（针对每个目的地）：
-  - `最快` 全天最优方案耗时
-  - `典型(中位)` **主运行图**（与最快班次同档、耗时 ≤ 最快+2h）方案的中位耗时——
-    避免普速/长等待方案把中位数拖离真实的"日常体验"
-  - `P90` 主档方案的 90 分位耗时（错过最优车次的恶化程度）
-  - `主档方案数` / `直达班次` / `末班可行出发`（班次密度与时间分布）
-  - 慢方案（>最快+2h）不计入以上统计，在时间轴中淡色显示并单独计数
-- **最晚到达过滤**（可选）：晚于该时刻到达的方案不计入统计，避免"凌晨才到"也算可达。
-- **当日方案时间轴**：每个目的地一张图，一条 = 一个不劣方案（按出发时刻排布，
-  颜色 = 换乘次数，宽条内标注出发时刻与车次），直观呈现"偶尔很快"还是"全天都容易到"；
-  点击可展开完整行程（车次、停站、换乘停留）。
-- **叠加等时圈 · 取交集**（2026-09-24 改造，替代原「之后必须赶到」）：主查询即第 1 个圈，
-  最多再叠 4 个圈，每个圈 = 一组通用取数条件——**方向（出发/抵达）+ 地点 + 日期 + 时段 +
-  预算 + 换乘 + 车种**。查询后自动做**城市级交集**：地图 ⊕ 白点标出各圈共同城市，
-  列表逐圈给出"该城在不在圈内 + 关键数字"（出发圈=典型耗时，抵达圈=最晚出发时刻）。
-  典型场景：杭州、上海、南京的朋友各建一个圈 → 共同可达的碰头城市一目了然。
-  「必须抵达某地」圈 = 反向等时圈（从哪些城市能在时限内赶到该地），
-  **不晚于**时刻 + 抵达预算（可"不限"，等价旧默认口径）；恰好一个抵达圈时
-  沿用「最晚 X 走」列与返程衔接时间轴（`btn-xleg`）。空交集明说无重叠，不伪装成查询失败。
-  出发地与全部圈配置跨刷新保留。引擎：出发圈走正向 `reach()`，抵达圈走
-  分层反向扫描 `constraint()`（每站最晚出发 + 到达时刻追踪）。
-- **同城车站切换**：详情卡展示同城其他可达车站及各自典型耗时，一键切换
-  （不同车站班次差异可能很大，如武汉/汉口/武昌）。
-- **出发地车站多选**：选择城市后可勾选实际使用的车站（默认全选），
-  剔除"同城但根本不会去"的车站（如只去长沙南，可取消长沙/长沙西）。
-  列表与地图按所选站集合重算（叠加圈暂用城市全站口径）。
-- **省/距离筛选与列**：列表新增省份、距出发地直线距离（km）两列；支持
-  省内/省外切换与最大公里数过滤，按距离排序。"更快到达"区同样遵守筛选。
-  省份按车站位置近似划分（已勘误 20+ 高流量误标城市；低班次县城站为最近锚点近似）。
-- **里程与票价估算**：详情卡显示典型方案的实乘里程与估算票价
-  （GTFS 无票价字段，按席别费率 × 经由里程估算，二等座口径，与实价误差常见 ±10%）。
-- **可选配色方案**：彩虹（默认）/ 深海蓝 / 暖阳橙红 / 冷暖对比 / 绿快红慢（交通灯），
-  图例内切换并本地记忆；浅色档自动加粗描边，低于预算下限的站用空心环区分。
-- **14 天日期窗口**：出发日与约束日期均支持今天起 14 天内选择（引擎预计算 14 天连接实例）。
-- **车种过滤**（高铁动车 G/D/C / 普速）、**着色依据切换**（典型耗时 / 方案数）、
-  按典型/最快/方案数/直达数/约束余量/距离排序、车站规模过滤（大站视图减少小站噪声）。
-- 出发站**近期发车时刻**（支持"我现在在车站"的场景）。
-- **卫星底图**：高德标准路网 / 卫星影像（含注记）可切换，便于看山湖地貌而不是空白行政区划。
-- **全国天气图层**（跟着出发日期，也可单独按日播放）：雨云、温度、风、预警。
-  预报来自 [Open-Meteo](https://open-meteo.com)（CMA GRAPES / ECMWF / DWD 等公开模式，约 16 天）；
-  预警代理中央气象台正在发布的信号。设计目标是「一眼看出哪片在下雨、风往哪边走」，
-  不追求点对点精确。
-- 引擎层面统一施加 **15 分钟同站换乘最短衔接**（直达不受影响），避免把
-  4 分钟衔接这类现实中赶不上的方案算作可行。
-
-## 架构
-
-```
-vendor/chinese-railway-gtfs   上游 git submodule（仓库本身不含 GTFS 文件）
-scripts/update_dataset.py     拉 Releases → etl → 归档 → 满月滚动删除
-scripts/redeploy.sh           更新数据集；DEPLOY=1 时部署 Cloudflare Pages
-data/gtfs/                    当前 GTFS 解压
-etl.py                        GTFS -> public/data/net.json
-public/data/net.json          当前路网（浏览器 Worker / Node 共用）
-public/data/archive/          旧路网快照（≥31 天）
-lib/engine.js                 可达性引擎（Node + 浏览器 Worker 同构）
-public/engine-worker.js       浏览器侧计算（Cloudflare 静态托管不需要 Node API）
-lib/weather_grid.js           Open-Meteo 全国格点聚合（POST，避免 GET 414）
-server.js                     本地 HTTP: 静态文件 + /api/*（含预警/格点代理）
-functions/api/weather/alarms  Cloudflare Pages Function：中央气象台预警代理
-functions/api/weather/grid    Cloudflare Pages Function：全国天气格点
-public/                       前端（原生 JS + Leaflet, 本地 vendor）
+```bash
+npm run pages:dev
+# http://127.0.0.1:8787
 ```
 
-### 引擎设计
+`npm run build` 同步 `lib/engine.js` 到浏览器副本，并校验路网、归档清单和 Pages
+单文件大小。不要手改 `public/engine.js`。项目架构与模块所有者见
+[ARCHITECTURE.md](ARCHITECTURE.md)。
 
-- **正向全天轮廓搜索**：对出发时刻做采样（默认取出发站当日全部发车时刻，上限 190 个
-  采样点），每个采样点跑一轮按"乘车次数 ≤1/≤2/≤3"分层的最早到达搜索（RAPTOR 思想，
-  车次即路线；换乘衔接需 ≥15 分钟），得到每个车站的全天**非支配方案集**
-  {(出发, 到达, 乘车次数, 首程车次)}。全天查询约 0.3–1s（13,891 车次 / 5,386 站 /
-  12.4 万停站记录）。
-- **反向最晚出发扫描**：给定截止时间 T 与目的地 B，对全网连接按到达时间降序一次扫描
-  （区分同车续行与跨车换乘，后者留 15 分钟衔接），得到每个车站"最晚何时出发仍能在
-  T 前到达 B"。~15ms。
-- **行程重构**：按采样点重放搜索并回溯父指针，输出完整乘车区间与途中停站。
-- 已用已知现实线路校验：长沙南→上海虹桥最快 4h00（36 直达）、北京南→上海虹桥 4h18、
-  广州南→长沙南 2h00 等，与 12306 实际运行图一致。
+## 部署 Cloudflare Pages
 
-### API
+推荐使用 **Direct Upload 项目 + GitHub Actions**，代码发布和数据更新走同一套验证。
+Wrangler 固定版本包含在开发依赖与锁文件中。
 
-- `GET /api/meta` 车站表 + 车次名
-- `GET /api/reach?o=<站id,…>&f=<起,绝对分>&t=<止>&cls=all|gdc|psk` 全天方案集
-- `GET /api/itinerary?…&st=<采样时刻>&s=<站>&j=<乘车数>` 行程重构
-- `GET /api/constraint?d=<目的地站id,…>&T=<截止,绝对分>&floor=<最早>` 反向最晚出发
-- `GET /api/departures?s=<站>&f=<起>&n=<数>` 近期发车
-- `GET /api/weather/alarms` 中央气象台在发预警（本地 server / Cloudflare Function 代理；无 CORS）
-- `GET /api/weather/grid` 全国 16 日雨云/温度/风格点（Open-Meteo 服务端聚合，约半小时缓存）
+1. 首次用自己的 Cloudflare 账号运行以下命令创建项目（已有项目跳过 create）：
 
-时间约定：界面「今天/现在」按北京时间；引擎绝对分钟 = 相对该查询日 00:00 的偏移（跨日车次为 1440+，GTFS 原生支持）。
+   ```bash
+   npx wrangler login
+   npx wrangler pages project create railway-map --production-branch main
+   npm test
+   npm run build
+   npm run pages:build
+   npm run deploy -- --project-name railway-map --branch main
+   ```
 
-可达性查询在浏览器 Web Worker 中完成（`public/engine-worker.js` 加载 `net.json`），
-因此 Cloudflare Pages 只托管静态文件即可；本地 `server.js` 仍保留同款 `/api/reach` 等接口，
-供脚本与回归使用。
+2. 在 GitHub 仓库的 **Settings → Secrets and variables → Actions** 设置：
 
-## Cloudflare Pages
+   | 类型 | 名称 | 内容 |
+   |---|---|---|
+   | Secret | `CLOUDFLARE_API_TOKEN` | 限定目标账号、具有 Account / Cloudflare Pages / Edit 的 API Token |
+   | Secret | `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 账号 ID |
+   | Variable，可选 | `CF_PAGES_PROJECT` | Pages 项目名，默认 `railway-map` |
 
-1. 本仓库 `public/` 为站点根目录（`wrangler.toml` 的 `pages_build_output_dir`）。
-2. 绑定 Git 后每次 push 自动发布；或 `DEPLOY=1 ./scripts/redeploy.sh`。
-3. `functions/` 提供预警代理与天气格点。若未启用 Functions，预警圆点不可用；雨云/温度/风会回退到浏览器直连 Open-Meteo（每批 ≤80 点 GET，避免 URL 过长 414）。
-4. 周更时刻表：跑 `scripts/update_dataset.py`（或 `.github/workflows/update-dataset.yml` 定时任务）再部署。
+3. 将仓库改动推送到 `main`。`deploy-pages` 会安装依赖、运行测试、构建 Functions、
+   在 Cloudflare 本地运行环境做浏览器检查，然后发布。也可在 Actions 手动运行。
+   生产地址由 Wrangler 的部署结果给出。
+4. 保持 GitHub Actions 启用，允许 `update-dataset` 的 `contents: write`；若 main
+   有禁止机器人直推的分支保护，需要按团队策略给数据更新分支安排合并通道。
+   工作流失败时在 GitHub 订阅 Actions 通知并查看失败步骤。
 
-## 数据源与已知限制
+若使用 Cloudflare 的 Git integration：构建命令 `npm run build`，输出目录 `public`，
+环境 Node.js 24。不要同时启用两套生产自动部署。推荐本仓库提供的 Actions 路径，
+以便更新任务能明确等待并验证部署结果。
 
-- 数据：社区 GTFS `wensimehrp/chinese-railway-gtfs`（周更，顶栏展示当前 release）。
-  坐标 WGS84（OSM），前端已做 GCJ02 纠偏以对齐高德瓦片。
-  卫星底图同样来自高德瓦片（GCJ-02）。
-- 天气图层是模式预报的全国粗网格（约 1.5°）+ 中央气象台预警列表，用于旅行决策扫描，
-  **不是**逐站精确预报；极端个例、对流天气会有漏报/空报。
-- **全部车次按每日开行处理**（feed 的 calendar 即如此声明的近似），个别临客/隔日车
-  可能造成班次数轻微偏差；不含限售、停运调整、晚点等运行时因素；**GTFS 无票价与余票
-  字段——界面票价为席别费率 × 经由里程的估算值**（非 12306 实价，仅共参考）。
-- 同站换乘按 15 分钟最短衔接建模；**跨车站换乘（同城两站间地铁接驳）不建模**，
-  例如"武昌下车→地铁去武汉站换乘直达 G"这类现实方案不会出现，需要用户自行组合。
-- 城市分组采用"主要枢纽手工映射 + 站名方位后缀归并"启发式，个别小地名分组可能与
-  行政区划不一致（不影响按车站查询）。
-- 换乘默认不引入跨站步行/地铁接驳（同站换乘）；`杭深线 (全线)` 等合成线路车次已剔除。
-- 方案数统计的是**不劣方案**（在某出发时刻下最优或换乘更少），略低于原始班次总数，
-  这是有意为之：被完全支配的班次对决策没有增量信息。
+## 自动更新与回滚
 
-## 验收协议（随机身份独立验收）
+`update-dataset` 每天北京时间 **14:23** 检查
+[wensimehrp/chinese-railway-gtfs Releases](https://github.com/wensimehrp/chinese-railway-gtfs/releases)。
+GitHub 计划任务可能延迟；公共仓库长期无活动也可能停用计划任务，需在 Actions 确认状态。
 
-任何用户可见交付的验收遵循 [AGENTS.md](AGENTS.md) §2：
+新版本在临时目录下载、ETL、结构校验并执行现实线路回归，通过后才替换当前快照、
+原始 GTFS 和版本记录。失败保留旧文件。相同版本不重复构建；代码构建始终同步引擎。
+上游站码别名合并和异常车次过滤计数保存在 `net.json` 的 `meta.quality`。
 
-1. **独立 subagent 完整使用**：验收者只拿到"一个真实用户的问题 + 产品地址"，
-   没有任何设计上下文、操作指引或术语提示；操作路径完全由验收者自主决定。
-2. **身份与需求随机**：`python acceptance/persona_gen.py` 生成随机画像
-   （身份 × 城市 × 时间 × 预算表述 × 偏好 × 约束类型/日期/时刻）。
-   **随机的是用户与需求，绝不随机操作路径**（防过拟合）。
-3. **不通过 → 全量反馈 → 全部修复 → 换新随机身份重验**，直至通过。
-4. 留档：`acceptance/rounds/round-N.md`（任务书）、`round-N-key.json`（画像参数，
-   验收方核对用，不给 subagent）、`round-N-result.md`（报告与逐项处置）。
+数据提交后**显式调用发布工作流**，不依赖 `GITHUB_TOKEN` 的 push 再触发工作流。
+没有新数据也会重试发布，便于恢复此前的部署失败。凭据缺失会明确失败。
 
-截至 2026-09-19 共 9 轮：5 轮通过、4 轮不通过（共 59 项反馈全部修复并复验），
-详见 `acceptance/rounds/`。过程中的关键修复：引擎多日期实例偏移（后天无数据根因）、
-15 分钟换乘衔接、"末班出发"取值 bug、约束可行性校验（返程发车须晚于最早到达）、
-在地停留时长、已发车班次剔除与"现在"呈现、主运行图中位数口径等。
+```bash
+npm run update:data                         # 本地下载、验证、更新
+python3 scripts/update_dataset.py --dry-run --skip-submodule
+python3 scripts/update_dataset.py --rebuild-local  # 使用已下载原始GTFS重新生成并完整验证
+DEPLOY=1 ./scripts/redeploy.sh              # 更新、完整验证、发布
+```
 
-## 测试
+归档在 `public/data/archive/`，从本地保存日起至少保留31天，并始终保留实际上一份；
+`public/data/manifest.json` 记录当前与上一份版本。需要回滚时可重新生成已知版本：
 
-- `node test_engine.js` — 引擎正确性（已知城市对耗时/班次）与性能。
-- `node qa_test.js` / `qa2.js` / `qa3.js` — Playwright 端到端流程（示例场景、手动选择、
-  详情/时间轴/行程/约束）。需要 `npm i playwright`（Chromium 已在
-  `~/AppData/Local/ms-playwright/chromium-1148`）。
-- `node browse.js run '<JSON动作数组>'` — 通用浏览器驱动（goto/click/fill/eval/shot 等），
-  供自动化与验收测试使用。
+```bash
+python3 scripts/update_dataset.py --tag gtfs-20261004-052300 --skip-submodule
+npm test
+npm run deploy -- --project-name railway-map --branch main
+```
+
+也可在 Cloudflare Dashboard 回滚到先前成功的部署。回滚后暂时停用更新任务，防止
+下次定时检查重新升级；修复后恢复任务。时刻表超过14天未更新会提示用户核对，
+页面检测到新版本会提供重新加载入口，避免悄悄改变正在查看的行程。跨北京时间午夜
+会保留已展示行程的日期，提示重新加载后再查询。
+
+## 验证
+
+```bash
+npm test                      # 固定路网、现实线路、更新失败与归档边界
+npm run build
+npm run pages:build
+npx playwright install chromium
+npm run test:browser           # 自动启动 Wrangler，真实 Worker 查询与失败路径
+node browse.js start          # 启动浏览器，复现具体界面问题
+node browse.js run '[{"op":"goto","arg":"http://127.0.0.1:8787"}]'
+node browse.js stop
+```
+
+Linux 缺少浏览器系统库时执行 `npx playwright install --with-deps chromium`。
+可以通过 `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` 指定本机 Chromium。
+验证规则见 [AGENTS.md](AGENTS.md#3-验证与审查)。根据改动运行相关检查，修复后用原输入复查。
+历史 AI 检查记录见 [acceptance/README.md](acceptance/README.md)。
+
+## 数据口径
+
+- 时刻表是社区周更快照，按每日开行近似；日期和“现在”统一北京时间。
+- 同站换乘至少15分钟，最多两次换乘；同城跨站接驳由用户自行安排。
+- “典型”是主档方案耗时中位数，预算上限及车种/换乘过滤会改变统计。
+  大站全天查询采用最多约190个出发样本，方案数是探索指标。
+- 有经由里程时按席别费率估算票价；上游缺少里程时明确显示不可估算，可尝试查询公布票价。
+  余票、临时停运和实际购票价格请在12306核对。
+- 天气为 Open-Meteo 粗网格预报和中央气象台预警；天气失败不会阻止铁路查询。
+- 城市采用人工映射和站名归并，省份按本地省级GeoJSON边界判断；地图高德瓦片使用 GCJ-02，站点已作坐标转换。

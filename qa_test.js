@@ -8,7 +8,7 @@ const path = require("path");
   fs.mkdirSync(path.join("shots"), { recursive: true });
   const browser = await chromium.launch({
     headless: true,
-    executablePath: require("os").homedir() + "\\AppData\\Local\\ms-playwright\\chromium-1148\\chrome-win\\chrome.exe",
+    executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
   });
   const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
   const errors = [];

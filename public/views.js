@@ -11,6 +11,7 @@ const Views = (() => {
   const MAX_VIEWS = 4;
   const COLORS = ["#7c3aed", "#0891b2", "#e11d48", "#059669", "#d97706"];
   let nextId = 1;
+  let restorationNotice = "";
   let views = [];   // 配置（持久化）
   let results = new Map(); // viewId -> {kind, ok, error?, stats?, latest?, arrAt?, cities:Set, byStop:Map}
   let intersect = null;    // Set<city> 主视图带内 ∩ 各启用视图
@@ -20,7 +21,7 @@ const Views = (() => {
   function save() {
     try {
       localStorage.setItem("railViews", JSON.stringify(views.map((v) => ({
-        id: v.id, dir: v.dir, name: v.name, stops: v.stops, city: v.city,
+        ...Places.encode(v, STATIONS),
         dateOff: v.dateOff, fromMin: v.fromMin, untilMin: v.untilMin,
         bmax: v.bmax, cls: v.cls, maxTra: v.maxTra, arrBy: v.arrBy,
         color: v.color, visible: v.visible,
@@ -31,11 +32,12 @@ const Views = (() => {
     try {
       const a = JSON.parse(localStorage.getItem("railViews") || "[]");
       if (Array.isArray(a)) {
-        views = a.filter((v) => v && v.name && Array.isArray(v.stops)).slice(0, MAX_VIEWS);
+        views = a.map((v) => Places.resolve(v, STATIONS)).filter(Boolean).slice(0, MAX_VIEWS);
+        if (views.length < a.length) restorationNotice = "部分保存的附加圈地点不在当前时刻表中，已移除，请重新选择。";
         views.forEach((v) => {
           v.id = Number(v.id) || nextId++;
-          v.dateOff = Number(v.dateOff) || 1; v.fromMin = Number(v.fromMin) || 360;
-          v.untilMin = Number(v.untilMin) || 1439; v.bmax = v.bmax == null ? 240 : Number(v.bmax); // 0=不限，合法值
+          v.dateOff = Number(v.dateOff ?? 1); v.fromMin = Number(v.fromMin ?? 360);
+          v.untilMin = Number(v.untilMin ?? 1439); v.bmax = v.bmax == null ? 240 : Number(v.bmax); // 0=不限，合法值
           v.cls = v.cls || "all"; v.maxTra = v.maxTra == null ? 2 : Number(v.maxTra);
           v.arrBy = v.arrBy == null ? null : Number(v.arrBy);
           v.visible = v.visible !== false; v.color = v.color || COLORS[(v.id - 1) % COLORS.length];
@@ -106,8 +108,8 @@ const Views = (() => {
       const lab = cb.labels[0];
       const n = views.length;
       const txt = n === 0 ? ""
-        : n === 1 ? ` 只看「主查询 ∩ 这 1 个圈」的城市（${views[0].dir === "arr" ? "必须赶到 " + views[0].name : "自 " + views[0].name + " 出发"}）`
-        : ` 只看「主查询 ∩ 全部 ${n} 个圈」的城市（地图 ⊕ 白点）`;
+        : n === 1 ? ` 只看同时符合去程和以下条件的城市（${!views[0].name ? "待选地点" : views[0].dir === "arr" ? "必须赶到 " + views[0].name : "自 " + views[0].name + " 出发"}）`
+        : ` 只看同时满足全部 ${n + 1} 项条件的城市（地图 ⊕ 白点）`;
       const tNode = [...lab.childNodes].find((x) => x.nodeType === 3);
       if (tNode) tNode.textContent = txt;
       else lab.appendChild(document.createTextNode(txt));
@@ -127,19 +129,19 @@ const Views = (() => {
           <label><input type="radio" name="vdir-${v.id}" value="arr" ${v.dir === "arr" ? "checked" : ""}><span>抵达</span></label>
         </div>
         <input class="vc-place" type="text" placeholder="城市或车站" autocomplete="off" value="${v.name || ""}">
-        <button type="button" class="vc-del" title="删除这个圈">✕</button>
+        <button type="button" class="vc-del" title="删除这项条件">✕</button>
       </div>
       <div class="vc-body">
         <div class="crow vc-row1">
           <label class="vc-f">日期<br><select class="vc-date">${dateOptions()} </select></label>
           <label class="vc-f">时段<br><span class="timerange"><input type="time" class="vc-from" step="300"> – <input type="time" class="vc-until" step="300"></span></label>
-          <label class="vc-f vc-arrby ${v.dir === "arr" ? "" : "hidden"}">不晚于<br><input type="time" class="vc-arrby" step="300" placeholder="23:59" title="该时刻前抵达目的地才算数；留空=当天不限"></label>
+          <label class="vc-f vc-arrby-field">${v.dir === "arr" ? "不晚于" : "最晚到站"}<br><input type="time" class="vc-arrby" step="300" placeholder="23:59" title="该时刻前抵达目的地才算数；留空=当天不限"></label>
         </div>
         <div class="crow vc-row2">
           <label class="vc-f">预算<br><select class="vc-bmax"></select></label>
           <label class="vc-f">换乘<br><select class="vc-tra"></select></label>
           <label class="vc-f">车种<br><select class="vc-cls"></select></label>
-          <label class="vc-f vc-foot-check"><input type="checkbox" class="vc-vis" ${v.visible ? "checked" : ""}>显示该圈</label>
+          <label class="vc-f vc-foot-check"><input type="checkbox" class="vc-vis" ${v.visible ? "checked" : ""}>显示在地图上</label>
         </div>
         <div class="vc-status mini"></div>
       </div>`;
@@ -175,7 +177,7 @@ const Views = (() => {
     placeInput.title = v.name ? `已绑定：${v.dir === "arr" ? "必须抵达" : "出发地"} ${v.name}（${v.stops.length} 站）。可重新输入替换。` : "输入城市或车站名";
     attachPlaceSearch(placeInput, (it) => {
       patchView(v.id, {
-        name: it.name, stops: it.stops.slice(),
+        type: it.type, name: it.name, stops: it.stops.slice(),
         city: it.type === "city" ? it.name : STATIONS[it.stops[0]].c,
       }, { noRerender: true });
       placeInput.classList.remove("vc-bad");
@@ -188,12 +190,10 @@ const Views = (() => {
     $c("vc-date").onchange = (e) => {
       const d = Number(e.target.value);
       if (d === v.dateOff) return;
-      const patch = { dateOff: d, fromMin: 6 * 60, untilMin: END_OF_DAY };
+      const patch = { dateOff: d };
       if (d < state.dateOff) patch.dateOff = state.dateOff; // 不早于主查询出发日
-      // 换日期时窗口重置全天（与主表单换日同规则）：圈若继承了主查询的"从现在起"，
-      // 只改日期不改时段会静默丢掉一上午班次（round-27 #8）
+      // 日期与时段独立；保留用户已经确认的窗口，尤其不能把午夜改成06:00。
       patchView(v.id, patch, { noRerender: true });
-      $c("vc-from").value = "06:00"; $c("vc-until").value = "23:59";
       if (patch.dateOff !== d) setStatus(`${dirLabel(v)}圈的日期不能早于主查询出发日（${anchorDateStr(state.dateOff)}），已改为该日。`, true);
       if (state.queried) runQuery();
     };
@@ -219,7 +219,7 @@ const Views = (() => {
     if (!st) return state.queried ? "本次未计算" : "点「查询可达性」后生效";
     if (st.error) return "❌ " + st.error;
     const n = st.cities ? st.cities.size : 0;
-    if (st.kind === "arr") return `${n} 城可按时抵达（数字=满足该圈的城市数）`;
+    if (st.kind === "arr") return `${n} 城可按时抵达（按此项条件）`;
     return `${n} 城在预算内`;
   }
 
@@ -300,30 +300,11 @@ const Views = (() => {
   // 与主查询 computeStats 同口径的参数化版本（供出发视图复用）
   function statsFor(journeys, opt) {
     const out = new Map();
-    const fAbs = opt.dateOff * 1440 + opt.fromMin;
-    const tAbs = opt.dateOff * 1440 + opt.untilMin;
-    for (const [stopI, js0] of journeys) {
-      let js = js0.filter((x) => x[2] - 1 <= opt.maxTra);
-      js = js.filter((x) => x[0] >= fAbs && x[0] <= tAbs);
-      if (opt.dateOff === 0) {
-        const nowAbs0 = nowAbsMin();
-        js = js.filter((x) => x[0] >= nowAbs0);
-      }
-      if (!js.length) continue;
-      const pairs = js.map((x) => [x[1] - x[0], x]).sort((a, b) => a[0] - b[0]);
-      const cut = Math.max(pairs[0][0], Math.min(opt.bmax, pairs[0][0] + 120));
-      const core = pairs.filter((p) => p[0] <= cut);
-      const coreDurs = core.map((p) => p[0]);
-      const med = coreDurs.length % 2
-        ? coreDurs[(coreDurs.length - 1) / 2]
-        : Math.round((coreDurs[coreDurs.length / 2 - 1] + coreDurs[coreDurs.length / 2]) / 2);
-      out.set(stopI, {
-        typ: med, fast: pairs[0][0], cnt: core.length,
-        dir: core.filter((p) => p[1][2] === 1).length,
-        lastDep: core.length ? Math.max(...core.map((p) => p[1][0])) : null,
-        firstDep: js[0][0], firstArr: Math.min(...js.map((x) => x[1])),
-        js,
-      });
+    const conditions = {from:opt.dateOff * 1440 + opt.fromMin, until:opt.dateOff * 1440 + opt.untilMin,
+      bmax:opt.bmax, maxTra:opt.maxTra, arriveBy:opt.arrBy == null ? null : opt.dateOff * 1440 + opt.arrBy, now:opt.dateOff === 0 ? nowAbsMin() : null};
+    for (const [stopI, js] of journeys) {
+      const st = JourneyStats.summarize(js, conditions);
+      if (st) out.set(stopI, st);
     }
     return out;
   }
@@ -345,16 +326,20 @@ const Views = (() => {
           const cities = new Set();
           const byStop = new Map();
           for (const [stopI, st] of stats) {
-            if (st.typ < 30 || st.typ > v.bmax) continue; // 与主表同口径: <30 分钟是通勤距离
+            if (v.bmax > 0 && st.typ > v.bmax) continue; // 与主表同口径: <30 分钟是通勤距离
             cities.add(STATIONS[stopI].c);
             byStop.set(stopI, st);
+          }
+          for (const stop of v.stops) {
+            const local = JourneyStats.atOrigin(v.dateOff * 1440 + v.fromMin);
+            cities.add(STATIONS[stop].c); byStop.set(stop, local); stats.set(stop, local);
           }
           results.set(v.id, { kind: "dep", ok: true, stats, cities, byStop, ms: data.stats ? data.stats.ms : null });
         } else {
           const T = v.dateOff * 1440 + (v.arrBy == null ? END_OF_DAY : v.arrBy);
           const floor = v.dateOff * 1440 + v.fromMin;
           const dur = v.bmax >= 1440 ? 0 : v.bmax;
-          const data = await api(`/api/constraint?d=${v.stops.join(",")}&T=${T}&floor=${floor}&xf=${v.maxTra}&dur=${dur}&cls=${v.cls}`);
+          const data = await api(`/api/constraint?d=${v.stops.join(",")}&T=${T}&floor=${floor}&until=${v.dateOff * 1440 + v.untilMin}&xf=${v.maxTra}&dur=${dur}&cls=${v.cls}`);
           if (gen !== queryGen) return;
           const cities = new Set();
           const byStop = new Map();
@@ -382,16 +367,7 @@ const Views = (() => {
 
   // 主视图（当前查询的预算带）城市集 ∩ 各启用视图城市集
   function mainBandCities() {
-    // 与 cityRows 同口径：城市以带内最优站判定，全市最优 <30 分钟视为通勤距离不算目的地
-    const best = new Map();
-    for (const [stopI, st] of state.stats) {
-      if (!(st.typ >= state.bmin - 30 && st.typ <= state.bmax)) continue;
-      const c = STATIONS[stopI].c;
-      if (!best.has(c) || st.typ < best.get(c)) best.set(c, st.typ);
-    }
-    const set = new Set();
-    for (const [c, typ] of best) if (typ >= 30) set.add(c);
-    return set;
+    return new Set(cityRows(true).map(row => STATIONS[row.stopI].c));
   }
   function computeIntersect() {
     const act = active();
@@ -458,7 +434,7 @@ const Views = (() => {
         on: true, name: v.name, stops: v.stops.slice(), allStops: v.stops.slice(),
         dateOff: v.dateOff, timeMin: v.arrBy, only: !!document.getElementById("intersect-only")?.checked,
         dur: v.bmax >= 1440 ? 0 : v.bmax, xf: v.maxTra, cls: v.cls,
-        tFromMin: v.fromMin === 6 * 60 ? null : v.fromMin, stayMin: prev && prev.stayMin || 0,
+        tFromMin: v.fromMin, tUntilMin: v.untilMin, stayMin: prev && prev.stayMin || 0,
       };
       state.conLabel = r && r.ok ? r.latest : null;
       state.conArr = r && r.ok ? r.arrAt : null;
@@ -516,8 +492,8 @@ const Views = (() => {
           const r = results.get(v.id);
           if (!r || !r.ok) return `${v.name} ×`;
           return r.kind === "dep"
-            ? `${v.name}：典型 ${fmtDur(cityBestDep(r, c).typ)}`
-            : `${v.name}：最晚 ${fmtClock(cityBestArr(r, c).latest)} 走`;
+            ? `${v.name}：典型 ${fmtDur(cityBestDep(r, c).st.typ)}`
+            : `${v.name}：最晚 ${fmtClock(cityBestArr(r, c).info.latest)} 走`;
         });
         const m = L.circleMarker([la, lo], {
           renderer: sharedRenderer, radius: 9, color: "#111827", weight: 2.4,
@@ -562,6 +538,7 @@ const Views = (() => {
       if (!r.cities.has(city)) return `<span class="tag bad" title="该圈不含此城市">✗ ${v.name}</span>`;
       if (r.kind === "dep") {
         const b = cityBestDep(r, city);
+        if (b.st.local) return `<span class="tag ok">● ${v.name} 已在当地</span>`;
         return `<span class="tag ok" title="自 ${v.name} 出发，典型 ${fmtDur(b.st.typ)}、方案 ${b.st.cnt}">● ${v.name} ${fmtDur(b.st.typ)}</span>`;
       }
       const b = cityBestArr(r, city);
@@ -581,7 +558,7 @@ const Views = (() => {
       else if (!r.cities.has(city)) body = `<span class="tag bad">此城不在该圈（超预算/时段或无班次）</span>`;
       else if (r.kind === "dep") {
         const b = cityBestDep(r, city);
-        body = `在圈内 · 最优站 <b>${STATIONS[b.stopI].n}</b> · 典型 ${fmtDur(b.st.typ)} · 方案 ${b.st.cnt} · 直达 ${b.st.dir}`;
+        body = b.st.local ? "已在当地，无需乘车" : `在圈内 · 最优站 <b>${STATIONS[b.stopI].n}</b> · 典型 ${fmtDur(b.st.typ)} · 方案 ${b.st.cnt} · 直达 ${b.st.dir} <button type="button" class="ghost" data-view-journeys="${v.id}">查看 ${v.name} → ${city} 各站车次</button>`;
       } else {
         const b = cityBestArr(r, city);
         body = `可行 · <b>${STATIONS[b.stopI].n}</b> 最晚 ${fmtAbs(b.info.latest)} 出发、${fmtAbs(b.info.arrAt)} 抵达（${fmtDur(b.info.dur)}）`;
@@ -591,7 +568,7 @@ const Views = (() => {
     const interLine = intersect
       ? `<p class="mini">${intersect.has(city) ? "⊕ <b>该城在所有圈的交集内</b>" : "○ 该城不在交集内（至少一圈不含它）"} · 交集共 ${intersect.size} 城${intersectOn() ? " · 列表已按交集过滤" : ""}</p>`
       : "";
-    return rows + interLine;
+    return rows + interLine + `<p class="mini">各人可能到达同城不同车站，碰头前请核对市内接驳时间。</p>`;
   }
 
   function summaryText() {
@@ -603,7 +580,7 @@ const Views = (() => {
       const n = r && r.ok ? r.cities.size : 0;
       return ` · ${v.dir === "arr" ? `抵达「${v.name}」圈 ${n} 城` : `「${v.name}」圈 ${n} 城`}`;
     }
-    return ` · ${act.length + 1} 圈交集 ${intersect ? intersect.size : "?"} 城`;
+    return ` · ${act.length + 1} 项条件均满足 ${intersect ? intersect.size : "?"} 城`;
   }
 
   function clearResults() {
@@ -642,6 +619,7 @@ const Views = (() => {
         perView: views.map((v) => { const r = results.get(v.id); return { name: v.name, dir: v.dir, ok: !!(r && r.ok), err: r && r.error, cities: r && r.ok ? r.cities.size : null }; }),
       };
     },
+    get restorationNotice() { return restorationNotice; },
     get intersect() { return intersect; },
     get nearMiss() { return nearMiss; },
     get views() { return views; },

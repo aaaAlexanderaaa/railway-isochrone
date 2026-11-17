@@ -1,0 +1,7 @@
+/* Role: 数据版本提示与布局占位；使用全站变量。 */
+body { display: flex; flex-direction: column; }
+#topbar { flex-shrink: 0; }
+#main { flex: 1; min-height: 0; height: auto; }
+#data-notice { flex-shrink: 0; padding: 6px 14px; color: var(--warn); background: var(--panel); font-size: 13px; }
+#data-notice[hidden] { display: none; }
+#data-notice button { color: var(--accent2); border: 0; background: transparent; text-decoration: underline; }

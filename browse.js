@@ -10,7 +10,7 @@ const fs = require("fs");
 const path = require("path");
 const { spawn } = require("child_process");
 
-const EXE = require("os").homedir().replace(/\\/g, "/") + "/AppData/Local/ms-playwright/chromium-1148/chrome-win/chrome.exe";
+const EXE = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath();
 const PORT = 9223;
 const PROFILE = path.join(__dirname, ".browse-profile");
 
@@ -81,7 +81,7 @@ async function main() {
   if (cmd === "start") {
     fs.mkdirSync(PROFILE, { recursive: true });
     const p = spawn(EXE, [
-      "--headless=new", `--remote-debugging-port=${PORT}`,
+      "--headless=new", "--no-sandbox", `--remote-debugging-port=${PORT}`,
       `--user-data-dir=${PROFILE}`, "--no-first-run", "--no-default-browser-check",
       "--window-size=1440,900", "about:blank",
     ], { detached: true, stdio: "ignore" });

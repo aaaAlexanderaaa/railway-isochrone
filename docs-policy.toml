@@ -1,0 +1,15 @@
+version = 2
+discipline_version = "2026.11"
+[project]
+identity = "product"
+language = "zh"
+default_stage = "usable"
+[collaboration]
+mode = "interactive"
+auto_independent_review = false
+[adoption]
+stage = "observed"
+[budgets]
+max_source_lines = 500
+max_style_lines = 300
+forbid_catchall_dirs = ["utils", "helpers", "common", "misc"]
