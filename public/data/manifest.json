@@ -1,8 +1,17 @@
 {
   "retentionDays": 31,
-  "current": "gtfs-20261116-085531",
-  "updatedAt": "2026-11-16T17:21:39Z",
+  "current": "gtfs-20261117-101334",
+  "updatedAt": "2026-11-18T15:50:13Z",
   "versions": [
+    {
+      "id": "gtfs-20261117-101334",
+      "date": "2026-11-17",
+      "stations": 3157,
+      "trips": 11766,
+      "file": "archive/gtfs-20261117-101334/net.json",
+      "publishedAt": "2026-11-17T10:13:45Z",
+      "builtAt": "2026-11-18T15:50:13Z"
+    },
     {
       "id": "gtfs-20261116-085531",
       "date": "2026-11-16",
@@ -11,16 +20,7 @@
       "file": "archive/gtfs-20261116-085531/net.json",
       "publishedAt": "2026-11-16T08:55:38Z",
       "builtAt": "2026-11-16T16:50:25Z"
-    },
-    {
-      "id": "gtfs-20261004-052300",
-      "date": "2026-10-04",
-      "stations": 5410,
-      "trips": 18615,
-      "file": "archive/gtfs-20261004-052300/net.json",
-      "publishedAt": "2026-10-04T05:23:04Z",
-      "builtAt": "2026-10-05T13:14:58Z"
     }
   ],
-  "previous": "gtfs-20261004-052300"
+  "previous": "gtfs-20261116-085531"
 }

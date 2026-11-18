@@ -1,2 +1,2 @@
 feed_publisher_name,feed_publisher_url,feed_lang,feed_start_date,feed_end_date,feed_version
-wensimehrp (Jeremy Gao),https://github.com/wensimehrp/chinese-railway-gtfs,zh,20261101,20270202,20261116
+wensimehrp (Jeremy Gao),https://github.com/wensimehrp/chinese-railway-gtfs,zh,20261102,20270202,20261117
