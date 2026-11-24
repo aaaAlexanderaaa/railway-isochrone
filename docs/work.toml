@@ -1,4 +1,12 @@
 [[tasks]]
+id = "maintenance-2026-11"
+status = "in_progress"
+sources = ["SRC-001", "SRC-002"]
+specs = ["delivery", "exploration"]
+summary = "本机全量维护体检（Node 22 + Python 3.12+）：切分支 chore/local-maintenance-check，运行 npm ci / npm test / npm run build / npm run pages:build；核对 scripts/update_dataset.py 与上游 wensimehrp/chinese-railway-gtfs 最新 Release（如滞后则在分支跑通 npm run update:data 并核对 net.json meta.quality）；审计 .github/workflows/ 的定时任务、版本钉死与回滚路径；修复明确低风险缺陷并给出 3–5 项按收益排序的后续优化建议。"
+human_check = "pending"
+
+[[tasks]]
 id = "discipline-2026-11"
 status = "done"
 sources = ["SRC-001"]
